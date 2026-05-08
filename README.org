@@ -1,0 +1,63 @@
+#+title: README for diff-minimap
+#+author: James Dyer
+#+email: captainflasmr@gmail.com
+#+language: en
+#+options: ':t toc:2 num:nil
+#+startup: content
+
+A VSCode-style minimap for Emacs that colour-codes every line by its diff-hl status (added, changed, removed) while also marking the visible viewport and current cursor row. Entirely self-contained — no dependency on the =demap= minimap package.
+
+* Installation
+
+Drop =diff-minimap.el= onto =load-path= and require it:
+
+#+begin_src emacs-lisp
+(add-to-list 'load-path "~/.emacs.d/offline-packages/local-packages/diff-minimap")
+(require 'diff-minimap)
+#+end_src
+
+Or with =use-package= (no =:ensure= since it is a local package):
+
+#+begin_src emacs-lisp
+(use-package diff-minimap
+  :load-path "~/.emacs.d/offline-packages/local-packages/diff-minimap")
+#+end_src
+
+* Usage
+
+~M-x diff-minimap-toggle~ or ~C-x v m~ opens the minimap in a side window. The same command closes it.
+
+#+begin_src emacs-lisp
+(diff-minimap-toggle)   ; open
+(diff-minimap-toggle)   ; close
+#+end_src
+
+The minor mode =diff-minimap-mode= is automatically activated when the minimap opens and deactivated when it closes. It keeps the minimap in sync on scroll and save.
+
+Click any row in the minimap to jump the source buffer to that line.
+
+* Customisation
+
+| Variable                    | Default | Description                                                        |
+|-----------------------------+---------+--------------------------------------------------------------------|
+| =diff-minimap-font-scale=  |     0.4 | Fraction of default font height for the minimap (1.0 = normal)      |
+| =diff-minimap-width=        |       8 | Width in characters of the side window (at the small font)         |
+| =diff-minimap-side=         |  'right | Side to display the minimap window (=left= or =right=)            |
+
+Faces =diff-minimap-font= controls the base font face. Highlight colours are derived automatically from =diff-hl-insert=, =diff-hl-change=, =diff-hl-delete=, =diff-added=, =diff-changed=, =diff-removed=, =region=, =cursor=, and =fringe= with hardcoded fallbacks.
+
+* How it works
+
+On each =post-command-hook= and =after-save-hook= (both buffer-local), =diff-minimap--render=:
+
+1. Reads every =diff-hl-hunk= overlay in the source buffer.
+2. Maps source lines to minimap rows using a scale factor (=total-lines / window-rows=).
+3. Paints each row with a background colour derived from the hunk type (added = green, changed = yellow, removed = red).
+4. Highlights the visible viewport with =region= colours and the current line with =cursor= colours.
+5. Stores =source-line= and =source-buf= text properties on each row for click-to-jump.
+
+* Dependencies
+
+- Emacs 27.1+
+- =diff-hl= (required at runtime; the minimap is a no-op when =diff-hl-mode= is not active)
+- =cl-lib= (built-in)

@@ -1,0 +1,23 @@
+#+title: Change log for diff-minimap
+#+author: James Dyer
+#+email: captainflasmr@gmail.com
+#+language: en
+#+options: ':t toc:nil author:nil email:nil num:nil title:nil
+#+todo: TODO DOING | DONE
+#+startup: showall
+
+This document contains the release notes for diff-minimap.
+
+* Versions
+
+** <2026-05-08>
+
+Initial release.
+
+- VSCode-style minimap showing diff-hl hunks across the entire buffer
+- Colour-coded rows: added (green), changed (yellow), removed (red)
+- Visible viewport highlight and current-line marker
+- Click-to-jump navigation from minimap to source buffer
+- Buffer-local minor mode =diff-minimap-mode= keeps the minimap in sync on scroll and save
+- =diff-minimap-toggle= command bound to =C-x v m=
+- Customisable font scale, width, and side placement
