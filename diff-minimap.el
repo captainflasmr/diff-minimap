@@ -53,7 +53,7 @@
   :type 'float
   :group 'diff-minimap)
 
-(defcustom diff-minimap-width 8
+(defcustom diff-minimap-width 6
   "Width in characters of the diff-minimap side window (at the small font)."
   :type 'integer
   :group 'diff-minimap)
