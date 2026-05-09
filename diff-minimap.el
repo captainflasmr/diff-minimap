@@ -124,6 +124,9 @@ is a string of XBM bitmap bytes (left-to-right, top-to-bottom)."
 (defvar-local diff-minimap--cursor-overlay nil
   "Overlay highlighting the cursor row in the minimap buffer.")
 
+(defvar diff-minimap--last-buffer nil
+  "Last buffer shown in the minimap; used to detect switches.")
+
 (defvar diff-minimap--buffer-name " *diff-minimap*"
   "Name of the hidden minimap buffer.")
 
@@ -426,29 +429,47 @@ Viewport and cursor highlights are applied as overlays by
 
 (defun diff-minimap--post-command ()
   "Immediate post-command-hook: update viewport/cursor overlays or full re-render.
-Full re-render only when buffer content or window size changed."
-  (when (and (bound-and-true-p diff-hl-mode)
-             (get-buffer-window diff-minimap--buffer-name))
-    (let ((mm-buf (get-buffer diff-minimap--buffer-name))
-          (this-buf (current-buffer)))
+Detects buffer switches and re-renders for the new buffer automatically.
+Clears the minimap when entering a buffer without `diff-hl-mode'."
+  (when (get-buffer-window diff-minimap--buffer-name)
+    (let ((buf (current-buffer))
+          (mm-buf (get-buffer diff-minimap--buffer-name)))
       (when mm-buf
-        (let* ((tick (with-current-buffer this-buf
-                       (buffer-chars-modified-tick)))
-               (src-win (get-buffer-window this-buf))
-               (cur-nrows (and src-win
-                               (floor (/ (window-height src-win)
-                                         diff-minimap-font-scale))))
-               (cur-themes (and (boundp 'custom-enabled-themes)
-                                custom-enabled-themes))
-               (needs-full (or (not (eq tick diff-minimap--last-tick))
-                                (and cur-nrows
-                                     (not (= cur-nrows
-                                             (or diff-minimap--last-nrows 0))))
-                                (not (equal cur-themes
-                                            diff-minimap--last-themes)))))
-          (if needs-full
-              (diff-minimap--render)
-            (diff-minimap--update-viewport)))))))
+        (unless (eq buf diff-minimap--last-buffer)
+          (setq diff-minimap--last-buffer buf)
+          (if (bound-and-true-p diff-hl-mode)
+              (progn
+                (diff-minimap--render)
+                (run-with-idle-timer
+                 0.05 nil
+                 (lambda ()
+                   (when (and (buffer-live-p buf)
+                              (eq diff-minimap--last-buffer buf))
+                     (with-current-buffer buf
+                       (diff-minimap--render))))))
+            (with-current-buffer mm-buf
+              (let ((inhibit-read-only t))
+                (erase-buffer)
+                (diff-minimap--clear-overlays))))))
+        (when (and (bound-and-true-p diff-hl-mode)
+                   (eq buf diff-minimap--last-buffer))
+          (let* ((tick (with-current-buffer buf
+                         (buffer-chars-modified-tick)))
+                 (src-win (get-buffer-window buf))
+                 (cur-nrows (and src-win
+                                 (floor (/ (window-height src-win)
+                                           diff-minimap-font-scale))))
+                 (cur-themes (and (boundp 'custom-enabled-themes)
+                                  custom-enabled-themes))
+                 (needs-full (or (not (eq tick diff-minimap--last-tick))
+                                  (and cur-nrows
+                                       (not (= cur-nrows
+                                               (or diff-minimap--last-nrows 0))))
+                                  (not (equal cur-themes
+                                              diff-minimap--last-themes)))))
+            (if needs-full
+                (diff-minimap--render)
+              (diff-minimap--update-viewport)))))))
 
 (defun diff-minimap--after-save ()
   "Force re-render after save (idle delay lets diff-hl catch up)."
@@ -509,15 +530,18 @@ Full re-render only when buffer content or window size changed."
 
 ;;;###autoload
 (define-minor-mode diff-minimap-mode
-  "Keep diff minimap in sync on scroll and save."
+  "Global minor mode keeping the diff minimap in sync.
+When active, the minimap follows the selected buffer and updates on
+scroll, edit, save, and buffer switch — no need to toggle per buffer."
   :lighter " DMap"
-  :global nil
+  :global t
   (if diff-minimap-mode
       (progn
-        (add-hook 'after-save-hook #'diff-minimap--after-save nil t)
-        (add-hook 'post-command-hook #'diff-minimap--post-command nil t))
-    (remove-hook 'after-save-hook #'diff-minimap--after-save t)
-    (remove-hook 'post-command-hook #'diff-minimap--post-command t)))
+        (add-hook 'post-command-hook #'diff-minimap--post-command)
+        (add-hook 'after-save-hook #'diff-minimap--after-save))
+    (remove-hook 'post-command-hook #'diff-minimap--post-command)
+    (remove-hook 'after-save-hook #'diff-minimap--after-save)
+    (setq diff-minimap--last-buffer nil)))
 
 (define-key vc-prefix-map (kbd "m") #'diff-minimap-toggle)
 
