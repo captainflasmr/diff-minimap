@@ -481,28 +481,31 @@ Full re-render only when buffer content or window size changed."
         (progn
           (diff-minimap-mode -1)
           (delete-window (get-buffer-window mm-buf)))
-      (display-buffer-in-side-window
-       mm-buf
-       `((side . ,diff-minimap-side)
-         (window-width . ,diff-minimap-width)
-         (no-delete-other-windows . t)
-         (preserve-size . (t . nil))))
-      (with-current-buffer mm-buf
-        (setq buffer-read-only t)
-        (setq cursor-type nil)
-        (setq line-spacing 0)
-        (setq-local truncate-lines t)
-        (setq-local left-fringe-width 0)
-        (setq-local right-fringe-width 0)
-        (face-remap-set-base 'default :height diff-minimap-font-scale)
-        (let ((map (make-sparse-keymap)))
-          (define-key map [mouse-1] #'diff-minimap--click-handler)
-          (define-key map [down-mouse-1] #'ignore)
-          (use-local-map map))
-        (setq-local mode-line-format nil)
-        (setq-local header-line-format nil))
-      (diff-minimap--render)
-      (diff-minimap-mode 1))))
+      (let ((win (display-buffer-in-side-window
+                  mm-buf
+                  `((side . ,diff-minimap-side)
+                    (window-width . ,diff-minimap-width)
+                    (no-delete-other-windows . t)
+                    (preserve-size . (t . nil))))))
+        (when win
+          (set-window-parameter win 'no-delete-other-windows t))
+        (with-current-buffer mm-buf
+          (setq window-size-fixed 'width)
+          (setq buffer-read-only t)
+          (setq cursor-type nil)
+          (setq line-spacing 0)
+          (setq-local truncate-lines t)
+          (setq-local left-fringe-width 0)
+          (setq-local right-fringe-width 0)
+          (face-remap-set-base 'default :height diff-minimap-font-scale)
+          (let ((map (make-sparse-keymap)))
+            (define-key map [mouse-1] #'diff-minimap--click-handler)
+            (define-key map [down-mouse-1] #'ignore)
+            (use-local-map map))
+          (setq-local mode-line-format nil)
+          (setq-local header-line-format nil))
+        (diff-minimap--render)
+        (diff-minimap-mode 1)))))
 
 ;;;###autoload
 (define-minor-mode diff-minimap-mode
