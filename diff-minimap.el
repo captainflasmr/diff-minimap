@@ -1,7 +1,7 @@
 ;;; diff-minimap.el --- VSCode-style minimap showing diff regions -*- lexical-binding: t; -*-
 ;;
 ;; Author: James Dyer <captainflasmr@gmail.com>
-;; Version: 0.2.1
+;; Version: 0.3.0
 ;; Package-Requires: ((emacs "27.1") (diff-hl "0.9"))
 ;; Keywords: vc, tools, convenience
 ;; URL: https://github.com/captainflasmr/diff-minimap
@@ -68,11 +68,11 @@
 `edge-bar' — solid bars at the top and bottom rows of the viewport.
 `filled'   — solid background across the entire viewport (obscures diffs).
 `outline'  — overline/underline in default foreground (theme-safe).
-`stipple'  — bitmap dot pattern over the viewport, lets diffs show through."
+`stipple'  — bitmap dot pattern fill + edge bars (diffs visible through)."
   :type '(choice (const :tag "Edge bars (top & bottom rows)" edge-bar)
                  (const :tag "Filled block (full background)" filled)
                  (const :tag "Overline/underline in default foreground" outline)
-                 (const :tag "Stipple dot pattern (diffs visible)" stipple))
+                 (const :tag "Stipple + edge bars (diffs visible)" stipple))
   :group 'diff-minimap)
 
 (defcustom diff-minimap-stipple-pattern 'dots-sparse
@@ -170,6 +170,14 @@ is a string of XBM bitmap bytes (left-to-right, top-to-bottom)."
     ((and (pred listp) pat) pat)    ; custom (WIDTH HEIGHT DATA)
     (_               diff-minimap--stipple-dots-sparse)))
 
+(defun diff-minimap--buffer-lines ()
+  "Return the number of content lines in the current buffer.
+Accounts for the trailing newline that Emacs adds on save."
+  (let ((n (line-number-at-pos (point-max) t)))
+    (if (save-excursion (goto-char (point-max)) (bolp))
+        (max 1 (1- n))
+      (max 1 n))))
+
 (defun diff-minimap--cache-faces ()
   "Compute and cache face colours used by the minimap.
 Respects `diff-minimap-colour-source' for diff highlight priority."
@@ -219,8 +227,8 @@ Called on every command — cheap overlay moves, not a full rebuild."
         (this-buf (current-buffer)))
     (when (and mm-buf (get-buffer-window mm-buf))
       (with-current-buffer this-buf
-        (let* ((total (line-number-at-pos (point-max) t))
-               (nrows (or diff-minimap--last-nrows 1))
+         (let* ((total (diff-minimap--buffer-lines))
+                (nrows (or diff-minimap--last-nrows 1))
                (scale (/ (float total) nrows))
                 (ws-win (get-buffer-window this-buf))
                 (pt-line (line-number-at-pos))
@@ -256,8 +264,8 @@ Called on every command — cheap overlay moves, not a full rebuild."
                                        mm-buf))
                    (overlay-put diff-minimap--viewport-edge-top
                                 'diff-minimap-overlay t))
-                 (overlay-put diff-minimap--viewport-edge-top 'face
-                              `(:background ,diff-minimap--view-bg :extend t))
+                  (overlay-put diff-minimap--viewport-edge-top 'face
+                               '(:overline t :extend t))
                  (overlay-put diff-minimap--viewport-edge-top 'priority 5)
                  (if diff-minimap--viewport-edge-bottom
                      (move-overlay diff-minimap--viewport-edge-bottom
@@ -271,7 +279,7 @@ Called on every command — cheap overlay moves, not a full rebuild."
                    (overlay-put diff-minimap--viewport-edge-bottom
                                 'diff-minimap-overlay t))
                  (overlay-put diff-minimap--viewport-edge-bottom 'face
-                              `(:background ,diff-minimap--view-bg :extend t))
+                              '(:underline t :extend t))
                  (overlay-put diff-minimap--viewport-edge-bottom 'priority 5))
                 ('filled
                  (when diff-minimap--viewport-edge-top
@@ -317,12 +325,6 @@ Called on every command — cheap overlay moves, not a full rebuild."
                                      :extend t))
                  (overlay-put diff-minimap--viewport-overlay 'priority 5))
                 ('stipple
-                 (when diff-minimap--viewport-edge-top
-                   (delete-overlay diff-minimap--viewport-edge-top)
-                   (setq diff-minimap--viewport-edge-top nil))
-                 (when diff-minimap--viewport-edge-bottom
-                   (delete-overlay diff-minimap--viewport-edge-bottom)
-                   (setq diff-minimap--viewport-edge-bottom nil))
                  (if diff-minimap--viewport-overlay
                      (move-overlay diff-minimap--viewport-overlay
                                    (diff-minimap--row->pos ws-row)
@@ -336,8 +338,37 @@ Called on every command — cheap overlay moves, not a full rebuild."
                                 'diff-minimap-overlay t))
                  (overlay-put diff-minimap--viewport-overlay 'face
                               `(:stipple ,(diff-minimap--resolve-stipple) :extend t))
-                 (overlay-put diff-minimap--viewport-overlay 'priority 5)))
-             ;; Cursor — 2-char left marker, always refresh face colour
+                 (overlay-put diff-minimap--viewport-overlay 'priority 3)
+                 ;; Edge bars on top of the stipple fill
+                 (if diff-minimap--viewport-edge-top
+                     (move-overlay diff-minimap--viewport-edge-top
+                                   (diff-minimap--row->pos ws-row)
+                                   (diff-minimap--row->pos (1+ ws-row))
+                                   mm-buf)
+                   (setq diff-minimap--viewport-edge-top
+                         (make-overlay (diff-minimap--row->pos ws-row)
+                                       (diff-minimap--row->pos (1+ ws-row))
+                                       mm-buf))
+                   (overlay-put diff-minimap--viewport-edge-top
+                                'diff-minimap-overlay t))
+                 (overlay-put diff-minimap--viewport-edge-top 'face
+                              `(:background ,diff-minimap--view-bg :extend t))
+                 (overlay-put diff-minimap--viewport-edge-top 'priority 5)
+                 (if diff-minimap--viewport-edge-bottom
+                     (move-overlay diff-minimap--viewport-edge-bottom
+                                   (diff-minimap--row->pos we-row)
+                                   (diff-minimap--row->pos (1+ we-row))
+                                   mm-buf)
+                   (setq diff-minimap--viewport-edge-bottom
+                         (make-overlay (diff-minimap--row->pos we-row)
+                                       (diff-minimap--row->pos (1+ we-row))
+                                       mm-buf))
+                   (overlay-put diff-minimap--viewport-edge-bottom
+                                'diff-minimap-overlay t))
+                 (overlay-put diff-minimap--viewport-edge-bottom 'face
+                               `(:background ,diff-minimap--view-bg :extend t))
+                  (overlay-put diff-minimap--viewport-edge-bottom 'priority 5)))
+              ;; Cursor — 2-char left marker, always refresh face colour
              (let ((cursor-end (+ (diff-minimap--row->pos cur-row) 2)))
                (if diff-minimap--cursor-overlay
                    (move-overlay diff-minimap--cursor-overlay
@@ -363,15 +394,15 @@ Viewport and cursor highlights are applied as overlays by
     (when (and (bound-and-true-p diff-hl-mode)
                (get-buffer-window mm-buf))
       (let* ((total (with-current-buffer this-buf
-                      (line-number-at-pos (point-max) t)))
+                       (diff-minimap--buffer-lines)))
              (src-win (get-buffer-window this-buf))
              (mm-win (get-buffer-window mm-buf))
-             (nrows (max 1
-                         (cond (src-win
-                                (floor (/ (window-height src-win)
-                                          diff-minimap-font-scale)))
-                               (mm-win (window-height mm-win))
-                               (t (frame-height)))))
+              (nrows (max 1
+                          (cond (src-win
+                                 (floor (/ (window-text-height src-win)
+                                           diff-minimap-font-scale)))
+                                (mm-win (window-height mm-win))
+                                (t (frame-height)))))
              (scale (/ (float total) nrows))
              (row-diff (make-vector nrows nil)))
         (setq diff-minimap--last-nrows nrows
@@ -440,8 +471,8 @@ Clears the minimap when entering a buffer without `diff-hl-mode'."
           (if (bound-and-true-p diff-hl-mode)
               (progn
                 (diff-minimap--render)
-                (run-with-idle-timer
-                 0.05 nil
+                (run-with-timer
+                 0.2 nil
                  (lambda ()
                    (when (and (buffer-live-p buf)
                               (eq diff-minimap--last-buffer buf))
@@ -456,9 +487,9 @@ Clears the minimap when entering a buffer without `diff-hl-mode'."
           (let* ((tick (with-current-buffer buf
                          (buffer-chars-modified-tick)))
                  (src-win (get-buffer-window buf))
-                 (cur-nrows (and src-win
-                                 (floor (/ (window-height src-win)
-                                           diff-minimap-font-scale))))
+                  (cur-nrows (and src-win
+                                  (floor (/ (window-text-height src-win)
+                                            diff-minimap-font-scale))))
                  (cur-themes (and (boundp 'custom-enabled-themes)
                                   custom-enabled-themes))
                  (needs-full (or (not (eq tick diff-minimap--last-tick))

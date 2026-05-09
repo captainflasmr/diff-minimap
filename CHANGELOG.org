@@ -10,6 +10,35 @@ This document contains the release notes for diff-minimap.
 
 * Versions
 
+** 0.3.0 — <2026-05-09>
+
+Global mode, multi-buffer support, and rendering accuracy.
+
+- Change =diff-minimap-mode= from buffer-local to global — once toggled on,
+  the minimap follows the selected buffer and updates automatically on
+  switch. No need to toggle per file.
+- Handle Dired and other buffers without =diff-hl-mode=: the minimap content
+  is cleared on entry, re-rendered on return to a file buffer.
+- Protect minimap window from =delete-other-windows= (=C-x 1=) via
+  explicit =no-delete-other-windows= window parameter.
+- Protect minimap window width from =split-window-right= (=C-x 3=) via
+  =window-size-fixed= buffer-locally in the minimap buffer.
+- Add =diff-minimap--buffer-lines= helper that compensates for the trailing
+  newline Emacs adds on save, correcting the =total-line-count / nrows= scale
+  so the last content line (and its diff hunk) maps to the last minimap row.
+- Align =render=, =update-viewport=, and =post-command= to all use
+  =window-text-height= for minimap row counts — previously =render= used
+  =window-height= (includes the mode line), inflating =nrows= and
+  misaligning the viewport overlay range with the rendered content.
+- Change =stipple= viewport style edge bars from solid =:background= to
+  =:overline= / =:underline= in the default foreground — the bottom edge
+  bar no longer covers the last row's diff colour underneath.
+- Add deferred re-render (0.2 s timer) after buffer switches to catch
+  =diff-hl= overlay updates that arrive asynchronously when visiting a
+  previously unseen file.
+- =diff-minimap--update-viewport= now also handles non-=diff-hl= buffers
+  by clearing overlays when entering them.
+
 ** 0.2.1 — <2026-05-09>
 
 Customisation and reliability.
@@ -37,19 +66,9 @@ Performance rewrite and viewport style options.
 - Cache face colours in defvars so the nine =face-attribute= calls happen once
   per full render instead of once per minimap row.
 - Add =diff-minimap-viewport-style= defcustom (edge-bar | filled | outline |
-  stipple) controlling how the viewport indicator is drawn:
-  - =edge-bar=: solid bars at the top and bottom rows of the viewport.
-  - =filled=: solid background across the entire viewport (obscures diffs).
-  - =outline=: box outline in the cursor colour around the viewport, no
-    background fill — diff colours remain visible underneath.
-  - =stipple=: bitmap dot pattern over the viewport (~12 % coverage); diff
-    colours show through the gaps (X11 frame only).
+  stipple) controlling how the viewport indicator is drawn.
 - Theme-change detection: track =custom-enabled-themes= and trigger a full
-  rebuild when the theme switches, preventing stale colour residue on overlay
-  faces.
-- Fix viewport not updating after =beginning-of-buffer=: compute we-row from
-  window-text-height instead of window-end, which is stale during
-  post-command-hook.
+  rebuild when the theme switches.
 - Fix =diff-minimap--update-viewport= called from inside =with-current-buffer
   mm-buf= context, causing wrong buffer measurements on first toggle.
 
@@ -61,7 +80,6 @@ Initial release.
 - Colour-coded rows: added (green), changed (yellow), removed (red).
 - Visible viewport highlight and current-line marker.
 - Click-to-jump navigation from minimap to source buffer.
-- Buffer-local minor mode =diff-minimap-mode= keeps the minimap in sync on
-  scroll and save.
+- Buffer-local minor mode keeps the minimap in sync on scroll and save.
 - =diff-minimap-toggle= command bound to =C-x v m=.
 - Customisable font scale, width, and side placement.

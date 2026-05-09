@@ -5,7 +5,7 @@
 #+options: ':t toc:2 num:nil
 #+startup: showall
 
-A VSCode-style minimap for Emacs (version 0.2.1) that colour-codes every line
+A VSCode-style minimap for Emacs (version 0.3.0) that colour-codes every line
 by its diff-hl status (added, changed, removed) while also marking the visible
 viewport and current cursor row.  Entirely self-contained — no dependency on
 the =demap= minimap package.
@@ -32,9 +32,10 @@ Or with =use-package= (no =:ensure= since it is a local package):
 same command closes it.
 
 The minor mode =diff-minimap-mode= is automatically activated when the minimap
-opens and deactivated when it closes.  It keeps the minimap in sync on
-=post-command-hook= (for scroll / cursor movement) and =after-save-hook= (for
-diff-hl overlay updates).
+opens and deactivated when it closes.  It is a global mode — once toggled on,
+the minimap follows the selected buffer automatically, re-rendering for each
+file that has =diff-hl-mode= enabled, and clearing when entering Dired or
+other non-diff buffers.
 
 Click any row in the minimap to jump the source buffer to that line.
 
@@ -48,7 +49,7 @@ Available styles:
 | =edge-bar= | Solid bars at the top and bottom rows of the viewport (default). |
 | =filled=   | Solid background across the entire viewport (obscures diffs).    |
 | =outline=  | Box outline around the viewport in the cursor colour.            |
-| =stipple=  | Bitmap dot pattern over the viewport (diffs visible through).    |
+| =stipple=  | Bitmap pattern fill + overline/underline edges (diffs visible). |
 
 Set it in your config:
 
@@ -125,8 +126,12 @@ The minimap buffer is written once by =diff-minimap--render=, which:
 
 The viewport indicator and cursor marker are then drawn as Emacs overlays on
 top of the minimap buffer — they are updated on every =post-command-hook= by
-=diff-minimap--update-viewport=, which simply moves the overlay positions
-(no buffer text is touched).
+=diff-minimap--update-viewport= (no buffer text is touched).
+
+The mode is global: the minimap window lives on one side of the frame and its
+content follows the selected buffer.  Switching to a file with =diff-hl-mode=
+triggers a full render; switching to Dired or a buffer without =diff-hl-mode=
+clears the minimap until a file buffer is selected again.
 
 A full re-render (=diff-minimap--render=) is triggered only when:
 
@@ -153,5 +158,9 @@ See [[file:CHANGELOG.org]] for the full release history.
 - The minimap uses =display-buffer-in-side-window= directly rather than
   =display-buffer-alist=, so custom =display-buffer-alist= rules may
   conflict.
+- The minimap window has =window-size-fixed= set to ='width= to prevent
+  horizontal resizing on frame split.  Manual width adjustment with
+  =C-x {= / =C-x }= is disabled; change the width via
+  =diff-minimap-width= and toggle off/on.
 - The =stipple= viewport style requires an X11 frame; it may not render on
   Cairo or PGTK backends.
