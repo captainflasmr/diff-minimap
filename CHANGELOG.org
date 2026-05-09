@@ -10,6 +10,21 @@ This document contains the release notes for diff-minimap.
 
 * Versions
 
+** 0.2.1 — <2026-05-09>
+
+Customisation and reliability.
+
+- Add =diff-minimap-colour-source= (diff-hl | diff) to choose whether
+  diff highlights use =diff-hl-insert/change/delete= faces or the built-in
+  =diff-added/changed/removed= faces as the primary colour source.
+- Add =diff-minimap-stipple-pattern= with five predefined bitmap patterns
+  (dots-sparse, diagonal, crosshatch, checkerboard, dots-dense) and a
+  custom =(WIDTH HEIGHT DATA)= option.
+- Fix viewport overlay not updating after =beginning-of-buffer= and similar
+  commands: compute we-row from window-text-height instead of
+  window-end (stale during post-command-hook), and fall back to centring
+  the viewport around the cursor when window-start is stale.
+
 ** 0.2.0 — <2026-05-09>
 
 Performance rewrite and viewport style options.
@@ -32,9 +47,9 @@ Performance rewrite and viewport style options.
 - Theme-change detection: track =custom-enabled-themes= and trigger a full
   rebuild when the theme switches, preventing stale colour residue on overlay
   faces.
-- Fix viewport not updating after =beginning-of-buffer= or similar window-start
-  changes: overlays are now always delete-and-recreate instead of moved, so
-  they always reflect current window state.
+- Fix viewport not updating after =beginning-of-buffer=: compute we-row from
+  window-text-height instead of window-end, which is stale during
+  post-command-hook.
 - Fix =diff-minimap--update-viewport= called from inside =with-current-buffer
   mm-buf= context, causing wrong buffer measurements on first toggle.
 

@@ -5,10 +5,10 @@
 #+options: ':t toc:2 num:nil
 #+startup: showall
 
-A VSCode-style minimap for Emacs that colour-codes every line by its diff-hl
-status (added, changed, removed) while also marking the visible viewport and
-current cursor row. Entirely self-contained — no dependency on the =demap=
-minimap package.
+A VSCode-style minimap for Emacs (version 0.2.1) that colour-codes every line
+by its diff-hl status (added, changed, removed) while also marking the visible
+viewport and current cursor row.  Entirely self-contained — no dependency on
+the =demap= minimap package.
 
 * Installation
 
@@ -60,19 +60,56 @@ Set it in your config:
 
 ** User options
 
-| Variable                        | Default   | Description                                                  |
-|---------------------------------+-----------+--------------------------------------------------------------|
+| Variable                        | Default        | Description                                                  |
+|---------------------------------+----------------+--------------------------------------------------------------|
 | =diff-minimap-font-scale=       | 0.4       | Fraction of default font height for the minimap (1.0 normal) |
 | =diff-minimap-width=            | 8         | Width in characters of the side window (at the small font)   |
 | =diff-minimap-side=             | 'right    | Side to display the minimap (=left= or =right=)              |
 | =diff-minimap-viewport-style=   | 'edge-bar | How to render the viewport indicator (see above)             |
+| =diff-minimap-stipple-pattern=  | 'dots-sparse | Bitmap pattern for the =stipple= viewport style          |
+| =diff-minimap-colour-source=    | 'diff-hl  | Prefer =diff-hl= fringe faces or built-in =diff= faces      |
 
-** Derived colours
+See the [[#stipple-patterns][stipple pattern table]] below for predefined values.
 
-Highlight colours are derived automatically from =diff-hl-insert=,
-=diff-hl-change=, =diff-hl-delete=, =diff-added=, =diff-changed=,
-=diff-removed=, =region=, =cursor=, and =fringe=, each with a hardcoded
-fallback.
+** Stipple patterns
+
+The =stipple= viewport style uses an XBM bitmap as a textured background over
+the viewport.  Predefined patterns are available via
+=diff-minimap-stipple-pattern=:
+
+| Value        | Description                    | Coverage |
+|--------------+--------------------------------+----------|
+| =dots-sparse=  | Diagonal single-pixel dots     | ~12 %    |
+| =diagonal=     | Thin diagonal lines            | ~25 %    |
+| =crosshatch=   | Alternating pixel cross-hatch  | ~50 %    |
+| =checkerboard= | Checkerboard                   | ~25 %    |
+| =dots-dense=   | Denser dot pattern             | ~25 %    |
+
+To use a custom stipple, set =diff-minimap-stipple-pattern= to a list of the
+form =(WIDTH HEIGHT DATA)= where DATA is an XBM bitmap string (bytes arranged
+left-to-right, top-to-bottom):
+
+#+begin_src emacs-lisp
+(setq diff-minimap-stipple-pattern
+      '(8 8 . ,(apply #'string '(#x80 #x40 #x20 #x10 #x08 #x04 #x02 #x01))))
+#+end_src
+
+** Colour source
+
+The =diff-minimap-colour-source= option controls which Emacs faces are
+queried for the diff highlight colours:
+
+- =diff-hl= (default) queries =diff-hl-insert=, =diff-hl-change=,
+  =diff-hl-delete= first, falling back to =diff-added=, =diff-changed=,
+  =diff-removed=.
+- =diff= reverses the priority: built-in diff faces first, diff-hl faces as
+  fallback.
+
+Both paths end with the same hardcoded hex fallbacks (=#006600=, =#666600=,
+=#660000=) so the minimap always has colour regardless of theme.
+
+Other derived colours (=norm-bg=, =view-bg=, =cur-bg=) always come from
+=fringe=, =region=, and =cursor= respectively.
 
 * How it works
 
@@ -106,6 +143,10 @@ once per full render rather than once per minimap row.
 - =diff-hl= (required at runtime; the minimap is a no-op when
   =diff-hl-mode= is not active)
 - =cl-lib= (built-in)
+
+* Changelog
+
+See [[file:CHANGELOG.org]] for the full release history.
 
 * Known limitations
 
