@@ -10,14 +10,43 @@ This document contains the release notes for diff-minimap.
 
 * Versions
 
-** <2026-05-08>
+** 0.2.0 — <2026-05-09>
+
+Performance rewrite and viewport style options.
+
+- Replace idle-timer scheduling (0.02 s) with direct =post-command-hook= for
+  instant cursor/viewport reflection — no more perceptible lag.
+- Split rendering into two tiers: full buffer rebuild only when diff content
+  changes (edit / save / theme switch); viewport and cursor positions are
+  updated via cheap overlay moves on every command.
+- Cache face colours in defvars so the nine =face-attribute= calls happen once
+  per full render instead of once per minimap row.
+- Add =diff-minimap-viewport-style= defcustom (edge-bar | filled | outline |
+  stipple) controlling how the viewport indicator is drawn:
+  - =edge-bar=: solid bars at the top and bottom rows of the viewport.
+  - =filled=: solid background across the entire viewport (obscures diffs).
+  - =outline=: box outline in the cursor colour around the viewport, no
+    background fill — diff colours remain visible underneath.
+  - =stipple=: bitmap dot pattern over the viewport (~12 % coverage); diff
+    colours show through the gaps (X11 frame only).
+- Theme-change detection: track =custom-enabled-themes= and trigger a full
+  rebuild when the theme switches, preventing stale colour residue on overlay
+  faces.
+- Fix viewport not updating after =beginning-of-buffer= or similar window-start
+  changes: overlays are now always delete-and-recreate instead of moved, so
+  they always reflect current window state.
+- Fix =diff-minimap--update-viewport= called from inside =with-current-buffer
+  mm-buf= context, causing wrong buffer measurements on first toggle.
+
+** 0.1.0 — <2026-05-08>
 
 Initial release.
 
-- VSCode-style minimap showing diff-hl hunks across the entire buffer
-- Colour-coded rows: added (green), changed (yellow), removed (red)
-- Visible viewport highlight and current-line marker
-- Click-to-jump navigation from minimap to source buffer
-- Buffer-local minor mode =diff-minimap-mode= keeps the minimap in sync on scroll and save
-- =diff-minimap-toggle= command bound to =C-x v m=
-- Customisable font scale, width, and side placement
+- VSCode-style minimap showing diff-hl hunks across the entire buffer.
+- Colour-coded rows: added (green), changed (yellow), removed (red).
+- Visible viewport highlight and current-line marker.
+- Click-to-jump navigation from minimap to source buffer.
+- Buffer-local minor mode =diff-minimap-mode= keeps the minimap in sync on
+  scroll and save.
+- =diff-minimap-toggle= command bound to =C-x v m=.
+- Customisable font scale, width, and side placement.

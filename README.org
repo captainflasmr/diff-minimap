@@ -1,11 +1,14 @@
-#+title: README for diff-minimap
+#+title: diff-minimap — VSCode-style minimap for Emacs
 #+author: James Dyer
 #+email: captainflasmr@gmail.com
 #+language: en
 #+options: ':t toc:2 num:nil
-#+startup: content
+#+startup: showall
 
-A VSCode-style minimap for Emacs that colour-codes every line by its diff-hl status (added, changed, removed) while also marking the visible viewport and current cursor row. Entirely self-contained — no dependency on the =demap= minimap package.
+A VSCode-style minimap for Emacs that colour-codes every line by its diff-hl
+status (added, changed, removed) while also marking the visible viewport and
+current cursor row. Entirely self-contained — no dependency on the =demap=
+minimap package.
 
 * Installation
 
@@ -25,39 +28,89 @@ Or with =use-package= (no =:ensure= since it is a local package):
 
 * Usage
 
-~M-x diff-minimap-toggle~ or ~C-x v m~ opens the minimap in a side window. The same command closes it.
+~M-x diff-minimap-toggle~ or ~C-x v m~ opens the minimap in a side window.  The
+same command closes it.
 
-#+begin_src emacs-lisp
-(diff-minimap-toggle)   ; open
-(diff-minimap-toggle)   ; close
-#+end_src
-
-The minor mode =diff-minimap-mode= is automatically activated when the minimap opens and deactivated when it closes. It keeps the minimap in sync on scroll and save.
+The minor mode =diff-minimap-mode= is automatically activated when the minimap
+opens and deactivated when it closes.  It keeps the minimap in sync on
+=post-command-hook= (for scroll / cursor movement) and =after-save-hook= (for
+diff-hl overlay updates).
 
 Click any row in the minimap to jump the source buffer to that line.
 
+* Viewport styles
+
+The viewport indicator can be selected via =diff-minimap-viewport-style=.
+Available styles:
+
+| Style      | Description                                                      |
+|------------+------------------------------------------------------------------|
+| =edge-bar= | Solid bars at the top and bottom rows of the viewport (default). |
+| =filled=   | Solid background across the entire viewport (obscures diffs).    |
+| =outline=  | Box outline around the viewport in the cursor colour.            |
+| =stipple=  | Bitmap dot pattern over the viewport (diffs visible through).    |
+
+Set it in your config:
+
+#+begin_src emacs-lisp
+(setq diff-minimap-viewport-style 'outline)
+#+end_src
+
 * Customisation
 
-| Variable                    | Default | Description                                                        |
-|-----------------------------+---------+--------------------------------------------------------------------|
-| =diff-minimap-font-scale=  |     0.4 | Fraction of default font height for the minimap (1.0 = normal)      |
-| =diff-minimap-width=        |       8 | Width in characters of the side window (at the small font)         |
-| =diff-minimap-side=         |  'right | Side to display the minimap window (=left= or =right=)            |
+** User options
 
-Faces =diff-minimap-font= controls the base font face. Highlight colours are derived automatically from =diff-hl-insert=, =diff-hl-change=, =diff-hl-delete=, =diff-added=, =diff-changed=, =diff-removed=, =region=, =cursor=, and =fringe= with hardcoded fallbacks.
+| Variable                        | Default   | Description                                                  |
+|---------------------------------+-----------+--------------------------------------------------------------|
+| =diff-minimap-font-scale=       | 0.4       | Fraction of default font height for the minimap (1.0 normal) |
+| =diff-minimap-width=            | 8         | Width in characters of the side window (at the small font)   |
+| =diff-minimap-side=             | 'right    | Side to display the minimap (=left= or =right=)              |
+| =diff-minimap-viewport-style=   | 'edge-bar | How to render the viewport indicator (see above)             |
+
+** Derived colours
+
+Highlight colours are derived automatically from =diff-hl-insert=,
+=diff-hl-change=, =diff-hl-delete=, =diff-added=, =diff-changed=,
+=diff-removed=, =region=, =cursor=, and =fringe=, each with a hardcoded
+fallback.
 
 * How it works
 
-On each =post-command-hook= and =after-save-hook= (both buffer-local), =diff-minimap--render=:
+The minimap buffer is written once by =diff-minimap--render=, which:
 
-1. Reads every =diff-hl-hunk= overlay in the source buffer.
-2. Maps source lines to minimap rows using a scale factor (=total-lines / window-rows=).
-3. Paints each row with a background colour derived from the hunk type (added = green, changed = yellow, removed = red).
-4. Highlights the visible viewport with =region= colours and the current line with =cursor= colours.
-5. Stores =source-line= and =source-buf= text properties on each row for click-to-jump.
+1. Scans every =diff-hl-hunk= overlay in the source buffer.
+2. Maps source lines to minimap rows via a scale factor:
+   =total-source-lines / minimap-rows=.
+3. Paints each minimap row with an =:extend t= background face derived from
+   the hunk type (insert = green, change = yellow, delete = red).
+4. Stores =source-line= and =source-buf= text properties on each row for
+   click-to-jump.
+
+The viewport indicator and cursor marker are then drawn as Emacs overlays on
+top of the minimap buffer — they are updated on every =post-command-hook= by
+=diff-minimap--update-viewport=, which simply moves the overlay positions
+(no buffer text is touched).
+
+A full re-render (=diff-minimap--render=) is triggered only when:
+
+- The buffer content changes (=buffer-chars-modified-tick=).
+- The source window is resized (=diff-minimap--last-nrows= changes).
+- The active theme changes (=custom-enabled-themes= changes).
+
+Face colours are cached in =defvar=s so the nine =face-attribute= calls run
+once per full render rather than once per minimap row.
 
 * Dependencies
 
 - Emacs 27.1+
-- =diff-hl= (required at runtime; the minimap is a no-op when =diff-hl-mode= is not active)
+- =diff-hl= (required at runtime; the minimap is a no-op when
+  =diff-hl-mode= is not active)
 - =cl-lib= (built-in)
+
+* Known limitations
+
+- The minimap uses =display-buffer-in-side-window= directly rather than
+  =display-buffer-alist=, so custom =display-buffer-alist= rules may
+  conflict.
+- The =stipple= viewport style requires an X11 frame; it may not render on
+  Cairo or PGTK backends.

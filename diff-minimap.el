@@ -1,7 +1,7 @@
 ;;; diff-minimap.el --- VSCode-style minimap showing diff regions -*- lexical-binding: t; -*-
 ;;
 ;; Author: James Dyer <captainflasmr@gmail.com>
-;; Version: 0.1.0
+;; Version: 0.2.0
 ;; Package-Requires: ((emacs "27.1") (diff-hl "0.9"))
 ;; Keywords: vc, tools, convenience
 ;; URL: https://github.com/captainflasmr/diff-minimap
@@ -63,6 +63,18 @@
   :type '(choice (const left) (const right))
   :group 'diff-minimap)
 
+(defcustom diff-minimap-viewport-style 'edge-bar
+  "How to render the viewport indicator in the minimap.
+`edge-bar' — solid bars at the top and bottom rows of the viewport.
+`filled'   — solid background across the entire viewport (obscures diffs).
+`outline'  — overline/underline in default foreground (theme-safe).
+`stipple'  — bitmap dot pattern over the viewport, lets diffs show through."
+  :type '(choice (const :tag "Edge bars (top & bottom rows)" edge-bar)
+                 (const :tag "Filled block (full background)" filled)
+                 (const :tag "Overline/underline in default foreground" outline)
+                 (const :tag "Stipple dot pattern (diffs visible)" stipple))
+  :group 'diff-minimap)
+
 (defface diff-minimap-font
   '((t :height 0.4 :inherit default))
   "Face used for the minimap buffer — tiny font for fine-grained display."
@@ -78,10 +90,13 @@
   "Snapshot of `custom-enabled-themes' at last full render.")
 
 (defvar-local diff-minimap--viewport-edge-top nil
-  "Overlay for the top edge of the viewport region (overline).")
+  "Overlay for the top edge of the viewport region (edge-bar style).")
 
 (defvar-local diff-minimap--viewport-edge-bottom nil
-  "Overlay for the bottom edge of the viewport region (underline).")
+  "Overlay for the bottom edge of the viewport region (edge-bar style).")
+
+(defvar-local diff-minimap--viewport-overlay nil
+  "Overlay covering the full viewport (filled/outline/stipple styles).")
 
 (defvar-local diff-minimap--cursor-overlay nil
   "Overlay highlighting the cursor row in the minimap buffer.")
@@ -96,6 +111,10 @@
 (defvar diff-minimap--chg-bg  "#666600")
 (defvar diff-minimap--del-bg  "#660000")
 (defvar diff-minimap--cur-bg  "#00ffff")
+
+(defconst diff-minimap--dot-stipple
+  (list 8 8 (apply #'string '(#x80 #x40 #x20 #x10 #x08 #x04 #x02 #x01)))
+  "8x8 XBM diagonal dot pattern for stipple viewport style (~12% coverage).")
 
 (defun diff-minimap--cache-faces ()
   "Compute and cache face colours used by the minimap."
@@ -127,6 +146,7 @@
       (delete-overlay ov)))
   (setq diff-minimap--viewport-edge-top nil
         diff-minimap--viewport-edge-bottom nil
+        diff-minimap--viewport-overlay nil
         diff-minimap--cursor-overlay nil))
 
 (defun diff-minimap--update-viewport ()
@@ -147,35 +167,104 @@ Called on every command — cheap overlay moves, not a full rebuild."
                                            (window-end ws-win t))) scale))))
                (cur-row (min (1- nrows)
                              (floor (/ (1- (line-number-at-pos)) scale)))))
-           (with-current-buffer mm-buf
-              ;; Viewport top edge — 1-row solid bar, always refresh colour
-              (if diff-minimap--viewport-edge-top
-                  (move-overlay diff-minimap--viewport-edge-top
-                                (diff-minimap--row->pos ws-row)
-                                (diff-minimap--row->pos (1+ ws-row))
-                                mm-buf)
-                (setq diff-minimap--viewport-edge-top
-                      (make-overlay (diff-minimap--row->pos ws-row)
-                                    (diff-minimap--row->pos (1+ ws-row))
-                                    mm-buf))
-                (overlay-put diff-minimap--viewport-edge-top 'diff-minimap-overlay t))
-              (overlay-put diff-minimap--viewport-edge-top 'face
-                           `(:background ,diff-minimap--view-bg :extend t))
-              (overlay-put diff-minimap--viewport-edge-top 'priority 5)
-              ;; Viewport bottom edge — 1-row solid bar, always refresh colour
-              (if diff-minimap--viewport-edge-bottom
-                  (move-overlay diff-minimap--viewport-edge-bottom
-                                (diff-minimap--row->pos we-row)
-                                (diff-minimap--row->pos (1+ we-row))
-                                mm-buf)
-                (setq diff-minimap--viewport-edge-bottom
-                      (make-overlay (diff-minimap--row->pos we-row)
-                                    (diff-minimap--row->pos (1+ we-row))
-                                    mm-buf))
-                (overlay-put diff-minimap--viewport-edge-bottom 'diff-minimap-overlay t))
-              (overlay-put diff-minimap--viewport-edge-bottom 'face
-                           `(:background ,diff-minimap--view-bg :extend t))
-              (overlay-put diff-minimap--viewport-edge-bottom 'priority 5)
+            (with-current-buffer mm-buf
+              (pcase diff-minimap-viewport-style
+                ('edge-bar
+                 (when diff-minimap--viewport-overlay
+                   (delete-overlay diff-minimap--viewport-overlay)
+                   (setq diff-minimap--viewport-overlay nil))
+                 (if diff-minimap--viewport-edge-top
+                     (move-overlay diff-minimap--viewport-edge-top
+                                   (diff-minimap--row->pos ws-row)
+                                   (diff-minimap--row->pos (1+ ws-row))
+                                   mm-buf)
+                   (setq diff-minimap--viewport-edge-top
+                         (make-overlay (diff-minimap--row->pos ws-row)
+                                       (diff-minimap--row->pos (1+ ws-row))
+                                       mm-buf))
+                   (overlay-put diff-minimap--viewport-edge-top
+                                'diff-minimap-overlay t))
+                 (overlay-put diff-minimap--viewport-edge-top 'face
+                              `(:background ,diff-minimap--view-bg :extend t))
+                 (overlay-put diff-minimap--viewport-edge-top 'priority 5)
+                 (if diff-minimap--viewport-edge-bottom
+                     (move-overlay diff-minimap--viewport-edge-bottom
+                                   (diff-minimap--row->pos we-row)
+                                   (diff-minimap--row->pos (1+ we-row))
+                                   mm-buf)
+                   (setq diff-minimap--viewport-edge-bottom
+                         (make-overlay (diff-minimap--row->pos we-row)
+                                       (diff-minimap--row->pos (1+ we-row))
+                                       mm-buf))
+                   (overlay-put diff-minimap--viewport-edge-bottom
+                                'diff-minimap-overlay t))
+                 (overlay-put diff-minimap--viewport-edge-bottom 'face
+                              `(:background ,diff-minimap--view-bg :extend t))
+                 (overlay-put diff-minimap--viewport-edge-bottom 'priority 5))
+                ('filled
+                 (when diff-minimap--viewport-edge-top
+                   (delete-overlay diff-minimap--viewport-edge-top)
+                   (setq diff-minimap--viewport-edge-top nil))
+                 (when diff-minimap--viewport-edge-bottom
+                   (delete-overlay diff-minimap--viewport-edge-bottom)
+                   (setq diff-minimap--viewport-edge-bottom nil))
+                 (if diff-minimap--viewport-overlay
+                     (move-overlay diff-minimap--viewport-overlay
+                                   (diff-minimap--row->pos ws-row)
+                                   (diff-minimap--row->pos (1+ we-row))
+                                   mm-buf)
+                   (setq diff-minimap--viewport-overlay
+                         (make-overlay (diff-minimap--row->pos ws-row)
+                                       (diff-minimap--row->pos (1+ we-row))
+                                       mm-buf))
+                   (overlay-put diff-minimap--viewport-overlay
+                                'diff-minimap-overlay t))
+                 (overlay-put diff-minimap--viewport-overlay 'face
+                              `(:background ,diff-minimap--view-bg :extend t))
+                 (overlay-put diff-minimap--viewport-overlay 'priority 5))
+                ('outline
+                 (when diff-minimap--viewport-edge-top
+                   (delete-overlay diff-minimap--viewport-edge-top)
+                   (setq diff-minimap--viewport-edge-top nil))
+                 (when diff-minimap--viewport-edge-bottom
+                   (delete-overlay diff-minimap--viewport-edge-bottom)
+                   (setq diff-minimap--viewport-edge-bottom nil))
+                 (if diff-minimap--viewport-overlay
+                     (move-overlay diff-minimap--viewport-overlay
+                                   (diff-minimap--row->pos ws-row)
+                                   (diff-minimap--row->pos (1+ we-row))
+                                   mm-buf)
+                   (setq diff-minimap--viewport-overlay
+                         (make-overlay (diff-minimap--row->pos ws-row)
+                                       (diff-minimap--row->pos (1+ we-row))
+                                       mm-buf))
+                   (overlay-put diff-minimap--viewport-overlay
+                                'diff-minimap-overlay t))
+                 (overlay-put diff-minimap--viewport-overlay 'face
+                              `(:box (:line-width 2 :color ,diff-minimap--cur-bg)
+                                     :extend t))
+                 (overlay-put diff-minimap--viewport-overlay 'priority 5))
+                ('stipple
+                 (when diff-minimap--viewport-edge-top
+                   (delete-overlay diff-minimap--viewport-edge-top)
+                   (setq diff-minimap--viewport-edge-top nil))
+                 (when diff-minimap--viewport-edge-bottom
+                   (delete-overlay diff-minimap--viewport-edge-bottom)
+                   (setq diff-minimap--viewport-edge-bottom nil))
+                 (if diff-minimap--viewport-overlay
+                     (move-overlay diff-minimap--viewport-overlay
+                                   (diff-minimap--row->pos ws-row)
+                                   (diff-minimap--row->pos (1+ we-row))
+                                   mm-buf)
+                   (setq diff-minimap--viewport-overlay
+                         (make-overlay (diff-minimap--row->pos ws-row)
+                                       (diff-minimap--row->pos (1+ we-row))
+                                       mm-buf))
+                   (overlay-put diff-minimap--viewport-overlay
+                                'diff-minimap-overlay t))
+                 (overlay-put diff-minimap--viewport-overlay 'face
+                              `(:stipple ,diff-minimap--dot-stipple :extend t))
+                 (overlay-put diff-minimap--viewport-overlay 'priority 5)))
              ;; Cursor — 2-char left marker, always refresh face colour
              (let ((cursor-end (+ (diff-minimap--row->pos cur-row) 2)))
                (if diff-minimap--cursor-overlay
