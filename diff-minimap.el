@@ -1,7 +1,7 @@
 ;;; diff-minimap.el --- VSCode-style minimap showing diff regions -*- lexical-binding: t; -*-
 ;;
 ;; Author: James Dyer <captainflasmr@gmail.com>
-;; Version: 0.3.0
+;; Version: 0.4.0
 ;; Package-Requires: ((emacs "27.1") (diff-hl "0.9"))
 ;; Keywords: vc, tools, convenience
 ;; URL: https://github.com/captainflasmr/diff-minimap
@@ -48,8 +48,8 @@
   "VSCode-style minimap showing diff regions across the entire buffer."
   :group 'tools)
 
-(defcustom diff-minimap-font-scale 0.4
-  "Fraction of default font height for the minimap. 1.0 = normal, 0.4 = tiny."
+(defcustom diff-minimap-font-scale 0.1
+  "Fraction of default font height for the minimap. 1.0 = normal, 0.1 = tiny."
   :type 'float
   :group 'diff-minimap)
 
@@ -548,6 +548,27 @@ Clears the minimap when entering a buffer without `diff-hl-mode'."
         (diff-minimap-mode 1)))))
 
 ;;;###autoload
+(defun diff-minimap-toggle-with-demap ()
+  "Toggle this minimap and `demap' together, one on each side.
+Opens both if neither is visible; closes both if either is.
+Demap should be configured on the right, this minimap on the left
+\(via `diff-minimap-side') to match the VSCode layout.
+When `demap' is absent, behaves as `diff-minimap-toggle'."
+  (interactive)
+  (if (not (fboundp 'demap-open))
+      (diff-minimap-toggle)
+    (let* ((mm-buf (get-buffer diff-minimap--buffer-name))
+           (demap-buf (get-buffer "*Minimap*"))
+           (mm-win (and mm-buf (get-buffer-window mm-buf)))
+           (demap-win (and demap-buf (get-buffer-window demap-buf))))
+      (if (or mm-win demap-win)
+          (progn
+            (when mm-win (diff-minimap-toggle))
+            (when demap-win (demap-close)))
+        (diff-minimap-toggle)
+        (demap-open)))))
+
+;;;###autoload
 (define-minor-mode diff-minimap-mode
   "Global minor mode keeping the diff minimap in sync.
 When active, the minimap follows the selected buffer and updates on
@@ -563,6 +584,7 @@ scroll, edit, save, and buffer switch — no need to toggle per buffer."
     (setq diff-minimap--last-buffer nil)))
 
 (define-key vc-prefix-map (kbd "m") #'diff-minimap-toggle)
+(define-key vc-prefix-map (kbd "M") #'diff-minimap-toggle-with-demap)
 
 (provide 'diff-minimap)
 ;;; diff-minimap.el ends here

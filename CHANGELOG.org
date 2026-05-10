@@ -10,6 +10,20 @@ This document contains the release notes for diff-minimap.
 
 * Versions
 
+** 0.4.0 — <2026-05-10>
+
+Overlay priority layering, filled default, demap integration, and removal of outline.
+
+- Replace text-property-based diff colouring with per-row overlays (priority 3)
+  so diffs sit between the viewport fill (priority 1) and cursor (priority 10).
+- Change =filled= viewport style priority from 5 to 1 — diffs now show through
+  the fill instead of being obscured.  Make =filled= the new default.
+- Change =stipple= viewport style priority from 3 to 2 — diffs show through
+  the stipple bitmap, matching the described intent ("diffs visible through").
+- Remove =outline= viewport style (box outline around the viewport).
+- Add =diff-minimap-toggle-with-demap= command that opens/closes the diff
+  minimap and =demap= together for a VSCode-like two-window layout.
+
 ** 0.3.0 — <2026-05-09>
 
 Global mode, multi-buffer support, and rendering accuracy.

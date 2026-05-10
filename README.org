@@ -5,10 +5,10 @@
 #+options: ':t toc:2 num:nil
 #+startup: showall
 
-A VSCode-style minimap for Emacs (version 0.3.0) that colour-codes every line
+A VSCode-style minimap for Emacs (version 0.4.0) that colour-codes every line
 by its diff-hl status (added, changed, removed) while also marking the visible
-viewport and current cursor row.  Entirely self-contained — no dependency on
-the =demap= minimap package.
+viewport and current cursor row.  Can be used standalone or alongside =demap=
+for a two-panel minimap layout.
 
 * Installation
 
@@ -39,6 +39,19 @@ other non-diff buffers.
 
 Click any row in the minimap to jump the source buffer to that line.
 
+* Demap integration
+
+If you also use the =demap= minimap package, the
+~diff-minimap-toggle-with-demap~ command opens demap on the right and
+diff-minimap on the left (set =diff-minimap-side= to ='left= beforehand) for a
+VSCode-like split: demap shows a zoomed-out code overview, diff-minimap shows
+the colour-coded diff ribbon.
+
+#+begin_src emacs-lisp
+(setq diff-minimap-side 'left)
+;; then: M-x diff-minimap-toggle-with-demap
+#+end_src
+
 * Viewport styles
 
 The viewport indicator can be selected via =diff-minimap-viewport-style=.
@@ -46,15 +59,14 @@ Available styles:
 
 | Style      | Description                                                      |
 |------------+------------------------------------------------------------------|
-| =edge-bar= | Solid bars at the top and bottom rows of the viewport (default). |
-| =filled=   | Solid background across the entire viewport (obscures diffs).    |
-| =outline=  | Box outline around the viewport in the cursor colour.            |
-| =stipple=  | Bitmap pattern fill + overline/underline edges (diffs visible). |
+| =edge-bar= | Solid bars at the top and bottom rows of the viewport.           |
+| =filled=   | Solid background across the entire viewport (diffs visible on top, default). |
+| =stipple=  | Bitmap pattern fill + edge bars (diffs visible through).         |
 
 Set it in your config:
 
 #+begin_src emacs-lisp
-(setq diff-minimap-viewport-style 'outline)
+(setq diff-minimap-viewport-style 'stipple)
 #+end_src
 
 * Customisation
@@ -63,10 +75,10 @@ Set it in your config:
 
 | Variable                        | Default        | Description                                                  |
 |---------------------------------+----------------+--------------------------------------------------------------|
-| =diff-minimap-font-scale=       | 0.4       | Fraction of default font height for the minimap (1.0 normal) |
-| =diff-minimap-width=            | 8         | Width in characters of the side window (at the small font)   |
+| =diff-minimap-font-scale=       | 0.1       | Fraction of default font height for the minimap (1.0 normal) |
+| =diff-minimap-width=            | 6         | Width in characters of the side window (at the small font)   |
 | =diff-minimap-side=             | 'right    | Side to display the minimap (=left= or =right=)              |
-| =diff-minimap-viewport-style=   | 'edge-bar | How to render the viewport indicator (see above)             |
+| =diff-minimap-viewport-style=   | 'filled   | How to render the viewport indicator (see above)             |
 | =diff-minimap-stipple-pattern=  | 'dots-sparse | Bitmap pattern for the =stipple= viewport style          |
 | =diff-minimap-colour-source=    | 'diff-hl  | Prefer =diff-hl= fringe faces or built-in =diff= faces      |
 
@@ -119,9 +131,11 @@ The minimap buffer is written once by =diff-minimap--render=, which:
 1. Scans every =diff-hl-hunk= overlay in the source buffer.
 2. Maps source lines to minimap rows via a scale factor:
    =total-source-lines / minimap-rows=.
-3. Paints each minimap row with an =:extend t= background face derived from
-   the hunk type (insert = green, change = yellow, delete = red).
-4. Stores =source-line= and =source-buf= text properties on each row for
+3. Paints each minimap row with an =:extend t= background face (normal
+   background from =fringe=).
+4. Applies diff colours as overlays (priority 3) on rows the source has
+   =diff-hl= hunks for — inserted (green), changed (yellow), removed (red).
+5. Stores =source-line= and =source-buf= text properties on each row for
    click-to-jump.
 
 The viewport indicator and cursor marker are then drawn as Emacs overlays on
