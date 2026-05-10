@@ -240,8 +240,8 @@ Called on every command — cheap overlay moves, not a full rebuild."
                           ;; beginning-of-buffer during post-command-hook)
                           ;; the cursor falls outside the old viewport.
                           ;; Fall back to centering around the cursor.
-                          (if (or (< cur-row from-start)
-                                  (>= cur-row (+ from-start vis-rows)))
+                           (if (or (< cur-row from-start)
+                                   (> cur-row (+ from-start vis-rows)))
                               (max 0 (- cur-row (/ vis-rows 2)))
                             from-start)))
                 (we-row (min (1- nrows) (+ ws-row vis-rows))))
@@ -375,12 +375,12 @@ Viewport and cursor highlights are applied as overlays by
                        (diff-minimap--buffer-lines)))
              (src-win (get-buffer-window this-buf))
              (mm-win (get-buffer-window mm-buf))
-              (nrows (max 1
-                          (cond (src-win
-                                 (floor (/ (window-text-height src-win)
-                                           diff-minimap-font-scale)))
-                                (mm-win (window-height mm-win))
-                                (t (frame-height)))))
+               (nrows (max 1
+                           (let ((row-px (ceiling (* (frame-char-height)
+                                                     diff-minimap-font-scale))))
+                             (floor (/ (window-body-height
+                                        (or mm-win src-win) t)
+                                       row-px)))))
              (scale (/ (float total) nrows))
              (row-diff (make-vector nrows nil)))
         (setq diff-minimap--last-nrows nrows
@@ -442,9 +442,14 @@ Viewport and cursor highlights are applied as overlays by
                                             mm-buf)))
                       (overlay-put ov 'face face)
                       (overlay-put ov 'priority 3)
-                      (overlay-put ov 'diff-minimap-overlay t)))))))
+                       (overlay-put ov 'diff-minimap-overlay t)))))))
             ;; Recreate viewport/cursor overlays from source buffer context
-            (diff-minimap--update-viewport))))))
+            (diff-minimap--update-viewport)
+            ;; Insert pushes point to point-max — move it back so redisplay
+            ;; doesn't try to chase it.  nrows now exactly matches the
+            ;; window height, so all rows are always visible.
+            (with-current-buffer mm-buf
+              (goto-char (point-min))))))))
 
 (defun diff-minimap--post-command ()
   "Immediate post-command-hook: update viewport/cursor overlays or full re-render.
@@ -474,10 +479,14 @@ Clears the minimap when entering a buffer without `diff-hl-mode'."
                    (eq buf diff-minimap--last-buffer))
           (let* ((tick (with-current-buffer buf
                          (buffer-chars-modified-tick)))
-                 (src-win (get-buffer-window buf))
-                  (cur-nrows (and src-win
-                                  (floor (/ (window-text-height src-win)
-                                            diff-minimap-font-scale))))
+                  (src-win (get-buffer-window buf))
+                   (cur-nrows (let ((mm-win (get-buffer-window mm-buf)))
+                                (when mm-win
+                                  (let ((row-px (ceiling
+                                                 (* (frame-char-height)
+                                                    diff-minimap-font-scale))))
+                                    (floor (/ (window-body-height mm-win t)
+                                              row-px))))))
                  (cur-themes (and (boundp 'custom-enabled-themes)
                                   custom-enabled-themes))
                  (needs-full (or (not (eq tick diff-minimap--last-tick))
