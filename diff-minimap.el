@@ -63,16 +63,14 @@
   :type '(choice (const left) (const right))
   :group 'diff-minimap)
 
-(defcustom diff-minimap-viewport-style 'edge-bar
+(defcustom diff-minimap-viewport-style 'filled
   "How to render the viewport indicator in the minimap.
 `edge-bar' — solid bars at the top and bottom rows of the viewport.
-`filled'   — solid background across the entire viewport (obscures diffs).
-`outline'  — overline/underline in default foreground (theme-safe).
+`filled'   — solid background across the entire viewport (diffs visible on top).
 `stipple'  — bitmap dot pattern fill + edge bars (diffs visible through)."
   :type '(choice (const :tag "Edge bars (top & bottom rows)" edge-bar)
-                 (const :tag "Filled block (full background)" filled)
-                 (const :tag "Overline/underline in default foreground" outline)
-                 (const :tag "Stipple + edge bars (diffs visible)" stipple))
+                  (const :tag "Filled block (full background)" filled)
+                  (const :tag "Stipple + edge bars (diffs visible)" stipple))
   :group 'diff-minimap)
 
 (defcustom diff-minimap-stipple-pattern 'dots-sparse
@@ -211,7 +209,7 @@ Respects `diff-minimap-colour-source' for diff highlight priority."
     (point)))
 
 (defun diff-minimap--clear-overlays ()
-  "Remove viewport edge and cursor overlays from the minimap buffer."
+  "Remove all diff-minimap overlays (viewport, cursor, diff colours) from the minimap buffer."
   (dolist (ov (overlays-in (point-min) (point-max)))
     (when (overlay-get ov 'diff-minimap-overlay)
       (delete-overlay ov)))
@@ -300,15 +298,10 @@ Called on every command — cheap overlay moves, not a full rebuild."
                    (overlay-put diff-minimap--viewport-overlay
                                 'diff-minimap-overlay t))
                  (overlay-put diff-minimap--viewport-overlay 'face
-                              `(:background ,diff-minimap--view-bg :extend t))
-                 (overlay-put diff-minimap--viewport-overlay 'priority 5))
-                ('outline
-                 (when diff-minimap--viewport-edge-top
-                   (delete-overlay diff-minimap--viewport-edge-top)
-                   (setq diff-minimap--viewport-edge-top nil))
-                 (when diff-minimap--viewport-edge-bottom
-                   (delete-overlay diff-minimap--viewport-edge-bottom)
-                   (setq diff-minimap--viewport-edge-bottom nil))
+                               `(:background ,diff-minimap--view-bg :extend t))
+                  ;; Below diff overlays (priority 3) so diffs show through.
+                  (overlay-put diff-minimap--viewport-overlay 'priority 1))
+                 ('stipple
                  (if diff-minimap--viewport-overlay
                      (move-overlay diff-minimap--viewport-overlay
                                    (diff-minimap--row->pos ws-row)
@@ -321,24 +314,9 @@ Called on every command — cheap overlay moves, not a full rebuild."
                    (overlay-put diff-minimap--viewport-overlay
                                 'diff-minimap-overlay t))
                  (overlay-put diff-minimap--viewport-overlay 'face
-                              `(:box (:line-width 2 :color ,diff-minimap--cur-bg)
-                                     :extend t))
-                 (overlay-put diff-minimap--viewport-overlay 'priority 5))
-                ('stipple
-                 (if diff-minimap--viewport-overlay
-                     (move-overlay diff-minimap--viewport-overlay
-                                   (diff-minimap--row->pos ws-row)
-                                   (diff-minimap--row->pos (1+ we-row))
-                                   mm-buf)
-                   (setq diff-minimap--viewport-overlay
-                         (make-overlay (diff-minimap--row->pos ws-row)
-                                       (diff-minimap--row->pos (1+ we-row))
-                                       mm-buf))
-                   (overlay-put diff-minimap--viewport-overlay
-                                'diff-minimap-overlay t))
-                 (overlay-put diff-minimap--viewport-overlay 'face
-                              `(:stipple ,(diff-minimap--resolve-stipple) :extend t))
-                 (overlay-put diff-minimap--viewport-overlay 'priority 3)
+                               `(:stipple ,(diff-minimap--resolve-stipple) :extend t))
+                  ;; Below diff overlays (priority 3) so diffs show through.
+                  (overlay-put diff-minimap--viewport-overlay 'priority 2)
                  ;; Edge bars on top of the stipple fill
                  (if diff-minimap--viewport-edge-top
                      (move-overlay diff-minimap--viewport-edge-top
@@ -432,29 +410,39 @@ Viewport and cursor highlights are applied as overlays by
                               (lr (min (1- nrows) (floor (/ el scale)))))
                           (cl-loop for r from fr to lr
                                    do (aset row-diff r ty)))))))))))
-        ;; Write minimap content — diff colours only
-        (let ((ins-face `(:background ,diff-minimap--ins-bg :extend t))
+        ;; Write minimap content — normal background as text props,
+        ;; then diff colours as overlays for proper priority layering.
+        (let ((nrm-face `(:background ,diff-minimap--norm-bg :extend t))
+              (ins-face `(:background ,diff-minimap--ins-bg :extend t))
               (chg-face `(:background ,diff-minimap--chg-bg :extend t))
-              (del-face `(:background ,diff-minimap--del-bg :extend t))
-              (nrm-face `(:background ,diff-minimap--norm-bg :extend t)))
+              (del-face `(:background ,diff-minimap--del-bg :extend t)))
           (with-current-buffer mm-buf
             (let ((inhibit-read-only t))
               (erase-buffer)
               (diff-minimap--clear-overlays)
               (dotimes (i nrows)
+                (let ((sline (1+ (floor (* i scale)))))
+                  (insert
+                   (propertize " " 'face nrm-face
+                               'source-line sline 'source-buf this-buf)
+                   (propertize (make-string (1- diff-minimap-width) ?\s)
+                               'face nrm-face
+                               'source-line sline 'source-buf this-buf)
+                   (propertize "\n" 'face nrm-face))))
+              ;; Diff colour overlays at priority 3 — above viewport fill (1)
+              ;; and stipple (2), below cursor (10) and edge/outline bars (5).
+              (dotimes (i nrows)
                 (let* ((dtype (aref row-diff i))
                        (face (cond ((eq dtype 'added) ins-face)
                                    ((eq dtype 'changed) chg-face)
-                                   ((eq dtype 'removed) del-face)
-                                   (t nrm-face)))
-                       (sline (1+ (floor (* i scale)))))
-                  (insert
-                   (propertize " " 'face face
-                               'source-line sline 'source-buf this-buf)
-                   (propertize (make-string (1- diff-minimap-width) ?\s)
-                                'face face
-                                'source-line sline 'source-buf this-buf)
-                   (propertize "\n" 'face face))))))
+                                   ((eq dtype 'removed) del-face))))
+                  (when face
+                    (let ((ov (make-overlay (diff-minimap--row->pos i)
+                                            (diff-minimap--row->pos (1+ i))
+                                            mm-buf)))
+                      (overlay-put ov 'face face)
+                      (overlay-put ov 'priority 3)
+                      (overlay-put ov 'diff-minimap-overlay t)))))))
             ;; Recreate viewport/cursor overlays from source buffer context
             (diff-minimap--update-viewport))))))
 

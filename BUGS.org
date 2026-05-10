@@ -10,6 +10,8 @@ This document contains the current bugs/improvements, this is just for me mainly
 
 * Bugs/Improvements
 
+** TODO what about a file not under version control?
+
 ** TODO mouse scrolling in viewport
 
 ** TODO complement demap
