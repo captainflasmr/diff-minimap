@@ -5,10 +5,7 @@
 #+options: ':t toc:2 num:nil
 #+startup: showall
 
-A VSCode-style minimap for Emacs (version 0.4.0) that colour-codes every line
-by its diff-hl status (added, changed, removed) while also marking the visible
-viewport and current cursor row.  Can be used standalone or alongside =demap=
-for a two-panel minimap layout.
+A VSCode-style minimap for Emacs (version 0.4.0) that colour-codes every line by its diff-hl status (added, changed, removed) while also marking the visible viewport and current cursor row.  Can be used standalone or alongside =demap= for a two-panel minimap layout.
 
 * Installation
 
@@ -28,24 +25,15 @@ Or with =use-package= (no =:ensure= since it is a local package):
 
 * Usage
 
-~M-x diff-minimap-toggle~ or ~C-x v m~ opens the minimap in a side window.  The
-same command closes it.
+~M-x diff-minimap-toggle~ or ~C-x v m~ opens the minimap in a side window.  The same command closes it.
 
-The minor mode =diff-minimap-mode= is automatically activated when the minimap
-opens and deactivated when it closes.  It is a global mode — once toggled on,
-the minimap follows the selected buffer automatically, re-rendering for each
-file that has =diff-hl-mode= enabled, and clearing when entering Dired or
-other non-diff buffers.
+The minor mode =diff-minimap-mode= is automatically activated when the minimap opens and deactivated when it closes.  It is a global mode — once toggled on, the minimap follows the selected buffer automatically, re-rendering for each file that has =diff-hl-mode= enabled, and clearing when entering Dired or other non-diff buffers.
 
 Click any row in the minimap to jump the source buffer to that line.
 
 * Demap integration
 
-If you also use the =demap= minimap package, the
-~diff-minimap-toggle-with-demap~ command opens demap on the right and
-diff-minimap on the left (set =diff-minimap-side= to ='left= beforehand) for a
-VSCode-like split: demap shows a zoomed-out code overview, diff-minimap shows
-the colour-coded diff ribbon.
+If you also use the =demap= minimap package, the ~diff-minimap-toggle-with-demap~ command opens demap on the right and diff-minimap on the left (set =diff-minimap-side= to ='left= beforehand) for a VSCode-like split: demap shows a zoomed-out code overview, diff-minimap shows the colour-coded diff ribbon.
 
 #+begin_src emacs-lisp
 (setq diff-minimap-side 'left)
@@ -54,8 +42,7 @@ the colour-coded diff ribbon.
 
 * Viewport styles
 
-The viewport indicator can be selected via =diff-minimap-viewport-style=.
-Available styles:
+The viewport indicator can be selected via =diff-minimap-viewport-style=.  Available styles:
 
 | Style      | Description                                                      |
 |------------+------------------------------------------------------------------|
@@ -86,9 +73,7 @@ See the [[#stipple-patterns][stipple pattern table]] below for predefined values
 
 ** Stipple patterns
 
-The =stipple= viewport style uses an XBM bitmap as a textured background over
-the viewport.  Predefined patterns are available via
-=diff-minimap-stipple-pattern=:
+The =stipple= viewport style uses an XBM bitmap as a textured background over the viewport.  Predefined patterns are available via =diff-minimap-stipple-pattern=:
 
 | Value        | Description                    | Coverage |
 |--------------+--------------------------------+----------|
@@ -98,9 +83,7 @@ the viewport.  Predefined patterns are available via
 | =checkerboard= | Checkerboard                   | ~25 %    |
 | =dots-dense=   | Denser dot pattern             | ~25 %    |
 
-To use a custom stipple, set =diff-minimap-stipple-pattern= to a list of the
-form =(WIDTH HEIGHT DATA)= where DATA is an XBM bitmap string (bytes arranged
-left-to-right, top-to-bottom):
+To use a custom stipple, set =diff-minimap-stipple-pattern= to a list of the form =(WIDTH HEIGHT DATA)= where DATA is an XBM bitmap string (bytes arranged left-to-right, top-to-bottom):
 
 #+begin_src emacs-lisp
 (setq diff-minimap-stipple-pattern
@@ -109,43 +92,28 @@ left-to-right, top-to-bottom):
 
 ** Colour source
 
-The =diff-minimap-colour-source= option controls which Emacs faces are
-queried for the diff highlight colours:
+The =diff-minimap-colour-source= option controls which Emacs faces are queried for the diff highlight colours:
 
-- =diff-hl= (default) queries =diff-hl-insert=, =diff-hl-change=,
-  =diff-hl-delete= first, falling back to =diff-added=, =diff-changed=,
-  =diff-removed=.
-- =diff= reverses the priority: built-in diff faces first, diff-hl faces as
-  fallback.
+- =diff-hl= (default) queries =diff-hl-insert=, =diff-hl-change=, =diff-hl-delete= first, falling back to =diff-added=, =diff-changed=, =diff-removed=.
+- =diff= reverses the priority: built-in diff faces first, diff-hl faces as fallback.
 
-Both paths end with the same hardcoded hex fallbacks (=#006600=, =#666600=,
-=#660000=) so the minimap always has colour regardless of theme.
+Both paths end with the same hardcoded hex fallbacks (=#006600=, =#666600=, =#660000=) so the minimap always has colour regardless of theme.
 
-Other derived colours (=norm-bg=, =view-bg=, =cur-bg=) always come from
-=fringe=, =region=, and =cursor= respectively.
+Other derived colours (=norm-bg=, =view-bg=, =cur-bg=) always come from =fringe=, =region=, and =cursor= respectively.
 
 * How it works
 
 The minimap buffer is written once by =diff-minimap--render=, which:
 
 1. Scans every =diff-hl-hunk= overlay in the source buffer.
-2. Maps source lines to minimap rows via a scale factor:
-   =total-source-lines / minimap-rows=.
-3. Paints each minimap row with an =:extend t= background face (normal
-   background from =fringe=).
-4. Applies diff colours as overlays (priority 3) on rows the source has
-   =diff-hl= hunks for — inserted (green), changed (yellow), removed (red).
-5. Stores =source-line= and =source-buf= text properties on each row for
-   click-to-jump.
+2. Maps source lines to minimap rows via a scale factor: =total-source-lines / minimap-rows=.
+3. Paints each minimap row with an =:extend t= background face (normal background from =fringe=).
+4. Applies diff colours as overlays (priority 3) on rows the source has =diff-hl= hunks for — inserted (green), changed (yellow), removed (red).
+5. Stores =source-line= and =source-buf= text properties on each row for click-to-jump.
 
-The viewport indicator and cursor marker are then drawn as Emacs overlays on
-top of the minimap buffer — they are updated on every =post-command-hook= by
-=diff-minimap--update-viewport= (no buffer text is touched).
+The viewport indicator and cursor marker are then drawn as Emacs overlays on top of the minimap buffer — they are updated on every =post-command-hook= by =diff-minimap--update-viewport= (no buffer text is touched).
 
-The mode is global: the minimap window lives on one side of the frame and its
-content follows the selected buffer.  Switching to a file with =diff-hl-mode=
-triggers a full render; switching to Dired or a buffer without =diff-hl-mode=
-clears the minimap until a file buffer is selected again.
+The mode is global: the minimap window lives on one side of the frame and its content follows the selected buffer.  Switching to a file with =diff-hl-mode= triggers a full render; switching to Dired or a buffer without =diff-hl-mode= clears the minimap until a file buffer is selected again.
 
 A full re-render (=diff-minimap--render=) is triggered only when:
 
@@ -153,8 +121,7 @@ A full re-render (=diff-minimap--render=) is triggered only when:
 - The source window is resized (=diff-minimap--last-nrows= changes).
 - The active theme changes (=custom-enabled-themes= changes).
 
-Face colours are cached in =defvar=s so the nine =face-attribute= calls run
-once per full render rather than once per minimap row.
+Face colours are cached in =defvar=s so the nine =face-attribute= calls run once per full render rather than once per minimap row.
 
 * Dependencies
 
@@ -169,12 +136,6 @@ See [[file:CHANGELOG.org]] for the full release history.
 
 * Known limitations
 
-- The minimap uses =display-buffer-in-side-window= directly rather than
-  =display-buffer-alist=, so custom =display-buffer-alist= rules may
-  conflict.
-- The minimap window has =window-size-fixed= set to ='width= to prevent
-  horizontal resizing on frame split.  Manual width adjustment with
-  =C-x {= / =C-x }= is disabled; change the width via
-  =diff-minimap-width= and toggle off/on.
-- The =stipple= viewport style requires an X11 frame; it may not render on
-  Cairo or PGTK backends.
+- The minimap uses =display-buffer-in-side-window= directly rather than =display-buffer-alist=, so custom =display-buffer-alist= rules may conflict.
+- The minimap window has =window-size-fixed= set to ='width= to prevent horizontal resizing on frame split.  Manual width adjustment with =C-x {= / =C-x }= is disabled; change the width via =diff-minimap-width= and toggle off/on.
+- The =stipple= viewport style requires an X11 frame; it may not render on Cairo or PGTK backends.
