@@ -5,7 +5,7 @@
 #+options: ':t toc:2 num:nil
 #+startup: showall
 
-A VSCode-style minimap for Emacs (version 0.4.0) that colour-codes every line by its diff-hl status (added, changed, removed) while also marking the visible viewport and current cursor row.  Can be used standalone or alongside =demap= for a two-panel minimap layout.
+A VSCode-style minimap for Emacs that colour-codes every line by its diff-hl status (added, changed, removed) while also marking the visible viewport and current cursor row.  Can be used standalone or alongside =demap= for a two-panel minimap layout.
 
 * Installation
 
@@ -44,11 +44,11 @@ If you also use the =demap= minimap package, the ~diff-minimap-toggle-with-demap
 
 The viewport indicator can be selected via =diff-minimap-viewport-style=.  Available styles:
 
-| Style      | Description                                                      |
-|------------+------------------------------------------------------------------|
-| =edge-bar= | Solid bars at the top and bottom rows of the viewport.           |
+| Style      | Description                                                                  |
+|------------+------------------------------------------------------------------------------|
+| =edge-bar= | Solid bars at the top and bottom rows of the viewport.                       |
 | =filled=   | Solid background across the entire viewport (diffs visible on top, default). |
-| =stipple=  | Bitmap pattern fill + edge bars (diffs visible through).         |
+| =stipple=  | Bitmap pattern fill + edge bars (diffs visible through).                     |
 
 Set it in your config:
 
@@ -60,14 +60,14 @@ Set it in your config:
 
 ** User options
 
-| Variable                        | Default        | Description                                                  |
-|---------------------------------+----------------+--------------------------------------------------------------|
-| =diff-minimap-font-scale=       | 0.1       | Fraction of default font height for the minimap (1.0 normal) |
-| =diff-minimap-width=            | 6         | Width in characters of the side window (at the small font)   |
-| =diff-minimap-side=             | 'right    | Side to display the minimap (=left= or =right=)              |
-| =diff-minimap-viewport-style=   | 'filled   | How to render the viewport indicator (see above)             |
-| =diff-minimap-stipple-pattern=  | 'dots-sparse | Bitmap pattern for the =stipple= viewport style          |
-| =diff-minimap-colour-source=    | 'diff-hl  | Prefer =diff-hl= fringe faces or built-in =diff= faces      |
+| Variable                       | Default      | Description                                                  |
+|--------------------------------+--------------+--------------------------------------------------------------|
+| =diff-minimap-font-scale=      | 0.1          | Fraction of default font height for the minimap (1.0 normal) |
+| =diff-minimap-width=           | 6            | Width in characters of the side window (at the small font)   |
+| =diff-minimap-side=            | 'right       | Side to display the minimap (=left= or =right=)              |
+| =diff-minimap-viewport-style=  | 'filled      | How to render the viewport indicator (see above)             |
+| =diff-minimap-stipple-pattern= | 'dots-sparse | Bitmap pattern for the =stipple= viewport style              |
+| =diff-minimap-colour-source=   | 'diff-hl     | Prefer =diff-hl= fringe faces or built-in =diff= faces       |
 
 See the [[#stipple-patterns][stipple pattern table]] below for predefined values.
 
@@ -75,13 +75,13 @@ See the [[#stipple-patterns][stipple pattern table]] below for predefined values
 
 The =stipple= viewport style uses an XBM bitmap as a textured background over the viewport.  Predefined patterns are available via =diff-minimap-stipple-pattern=:
 
-| Value        | Description                    | Coverage |
-|--------------+--------------------------------+----------|
-| =dots-sparse=  | Diagonal single-pixel dots     | ~12 %    |
-| =diagonal=     | Thin diagonal lines            | ~25 %    |
-| =crosshatch=   | Alternating pixel cross-hatch  | ~50 %    |
-| =checkerboard= | Checkerboard                   | ~25 %    |
-| =dots-dense=   | Denser dot pattern             | ~25 %    |
+| Value          | Description                   | Coverage |
+|----------------+-------------------------------+----------|
+| =dots-sparse=  | Diagonal single-pixel dots    | ~12 %    |
+| =diagonal=     | Thin diagonal lines           | ~25 %    |
+| =crosshatch=   | Alternating pixel cross-hatch | ~50 %    |
+| =checkerboard= | Checkerboard                  | ~25 %    |
+| =dots-dense=   | Denser dot pattern            | ~25 %    |
 
 To use a custom stipple, set =diff-minimap-stipple-pattern= to a list of the form =(WIDTH HEIGHT DATA)= where DATA is an XBM bitmap string (bytes arranged left-to-right, top-to-bottom):
 
