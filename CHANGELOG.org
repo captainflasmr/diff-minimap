@@ -14,15 +14,11 @@ This document contains the release notes for diff-minimap.
 
 Overlay priority layering, filled default, demap integration, and removal of outline.
 
-- Replace text-property-based diff colouring with per-row overlays (priority 3)
-  so diffs sit between the viewport fill (priority 1) and cursor (priority 10).
-- Change =filled= viewport style priority from 5 to 1 — diffs now show through
-  the fill instead of being obscured.  Make =filled= the new default.
-- Change =stipple= viewport style priority from 3 to 2 — diffs show through
-  the stipple bitmap, matching the described intent ("diffs visible through").
+- Replace text-property-based diff colouring with per-row overlays (priority 3) so diffs sit between the viewport fill (priority 1) and cursor (priority 10).
+- Change =filled= viewport style priority from 5 to 1 — diffs now show through the fill instead of being obscured.  Make =filled= the new default.
+- Change =stipple= viewport style priority from 3 to 2 — diffs show through the stipple bitmap, matching the described intent ("diffs visible through").
 - Remove =outline= viewport style (box outline around the viewport).
-- Add =diff-minimap-toggle-with-demap= command that opens/closes the diff
-  minimap and =demap= together for a VSCode-like two-window layout.
+- Add =diff-minimap-toggle-with-demap= command that opens/closes the diff minimap and =demap= together for a VSCode-like two-window layout.
 
 ** 0.3.0 — <2026-05-09>
 
@@ -31,60 +27,33 @@ Global mode, multi-buffer support, and rendering accuracy.
 - Change =diff-minimap-mode= from buffer-local to global — once toggled on,
   the minimap follows the selected buffer and updates automatically on
   switch. No need to toggle per file.
-- Handle Dired and other buffers without =diff-hl-mode=: the minimap content
-  is cleared on entry, re-rendered on return to a file buffer.
-- Protect minimap window from =delete-other-windows= (=C-x 1=) via
-  explicit =no-delete-other-windows= window parameter.
-- Protect minimap window width from =split-window-right= (=C-x 3=) via
-  =window-size-fixed= buffer-locally in the minimap buffer.
-- Add =diff-minimap--buffer-lines= helper that compensates for the trailing
-  newline Emacs adds on save, correcting the =total-line-count / nrows= scale
-  so the last content line (and its diff hunk) maps to the last minimap row.
-- Align =render=, =update-viewport=, and =post-command= to all use
-  =window-text-height= for minimap row counts — previously =render= used
-  =window-height= (includes the mode line), inflating =nrows= and
-  misaligning the viewport overlay range with the rendered content.
-- Change =stipple= viewport style edge bars from solid =:background= to
-  =:overline= / =:underline= in the default foreground — the bottom edge
-  bar no longer covers the last row's diff colour underneath.
-- Add deferred re-render (0.2 s timer) after buffer switches to catch
-  =diff-hl= overlay updates that arrive asynchronously when visiting a
-  previously unseen file.
-- =diff-minimap--update-viewport= now also handles non-=diff-hl= buffers
-  by clearing overlays when entering them.
+- Handle Dired and other buffers without =diff-hl-mode=: the minimap content is cleared on entry, re-rendered on return to a file buffer.
+- Protect minimap window from =delete-other-windows= (=C-x 1=) via explicit =no-delete-other-windows= window parameter.
+- Protect minimap window width from =split-window-right= (=C-x 3=) via =window-size-fixed= buffer-locally in the minimap buffer.
+- Add =diff-minimap--buffer-lines= helper that compensates for the trailing newline Emacs adds on save, correcting the =total-line-count / nrows= scale so the last content line (and its diff hunk) maps to the last minimap row.
+- Align =render=, =update-viewport=, and =post-command= to all use =window-text-height= for minimap row counts — previously =render= used =window-height= (includes the mode line), inflating =nrows= and misaligning the viewport overlay range with the rendered content.
+- Change =stipple= viewport style edge bars from solid =:background= to =:overline= / =:underline= in the default foreground — the bottom edge bar no longer covers the last row's diff colour underneath.
+- Add deferred re-render (0.2 s timer) after buffer switches to catch =diff-hl= overlay updates that arrive asynchronously when visiting a previously unseen file.
+- =diff-minimap--update-viewport= now also handles non-=diff-hl= buffers by clearing overlays when entering them.
 
 ** 0.2.1 — <2026-05-09>
 
 Customisation and reliability.
 
-- Add =diff-minimap-colour-source= (diff-hl | diff) to choose whether
-  diff highlights use =diff-hl-insert/change/delete= faces or the built-in
-  =diff-added/changed/removed= faces as the primary colour source.
-- Add =diff-minimap-stipple-pattern= with five predefined bitmap patterns
-  (dots-sparse, diagonal, crosshatch, checkerboard, dots-dense) and a
-  custom =(WIDTH HEIGHT DATA)= option.
-- Fix viewport overlay not updating after =beginning-of-buffer= and similar
-  commands: compute we-row from window-text-height instead of
-  window-end (stale during post-command-hook), and fall back to centring
-  the viewport around the cursor when window-start is stale.
+- Add =diff-minimap-colour-source= (diff-hl | diff) to choose whether diff highlights use =diff-hl-insert/change/delete= faces or the built-in =diff-added/changed/removed= faces as the primary colour source.
+- Add =diff-minimap-stipple-pattern= with five predefined bitmap patterns (dots-sparse, diagonal, crosshatch, checkerboard, dots-dense) and a custom =(WIDTH HEIGHT DATA)= option.
+- Fix viewport overlay not updating after =beginning-of-buffer= and similar commands: compute we-row from window-text-height instead of window-end (stale during post-command-hook), and fall back to centring the viewport around the cursor when window-start is stale.
 
 ** 0.2.0 — <2026-05-09>
 
 Performance rewrite and viewport style options.
 
-- Replace idle-timer scheduling (0.02 s) with direct =post-command-hook= for
-  instant cursor/viewport reflection — no more perceptible lag.
-- Split rendering into two tiers: full buffer rebuild only when diff content
-  changes (edit / save / theme switch); viewport and cursor positions are
-  updated via cheap overlay moves on every command.
-- Cache face colours in defvars so the nine =face-attribute= calls happen once
-  per full render instead of once per minimap row.
-- Add =diff-minimap-viewport-style= defcustom (edge-bar | filled | outline |
-  stipple) controlling how the viewport indicator is drawn.
-- Theme-change detection: track =custom-enabled-themes= and trigger a full
-  rebuild when the theme switches.
-- Fix =diff-minimap--update-viewport= called from inside =with-current-buffer
-  mm-buf= context, causing wrong buffer measurements on first toggle.
+- Replace idle-timer scheduling (0.02 s) with direct =post-command-hook= for instant cursor/viewport reflection — no more perceptible lag.
+- Split rendering into two tiers: full buffer rebuild only when diff content changes (edit / save / theme switch); viewport and cursor positions are updated via cheap overlay moves on every command.
+- Cache face colours in defvars so the nine =face-attribute= calls happen once per full render instead of once per minimap row.
+- Add =diff-minimap-viewport-style= defcustom (edge-bar | filled | outline | stipple) controlling how the viewport indicator is drawn.
+- Theme-change detection: track =custom-enabled-themes= and trigger a full rebuild when the theme switches.
+- Fix =diff-minimap--update-viewport= called from inside =with-current-buffer mm-buf= context, causing wrong buffer measurements on first toggle.
 
 ** 0.1.0 — <2026-05-08>
 
