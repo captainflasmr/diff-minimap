@@ -42,6 +42,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'pulse)
 
 (defvar diff-hl-mode)
 
@@ -364,7 +365,7 @@ inclusive line numbers in the current buffer."
       (setq result (nconc result
                           (diff-minimap--process-hunk-lines
                            (nreverse hunk-lines) hunk-new-start))))
-    (diff-minimap--merge-ranges (nreverse result))))
+    (diff-minimap--merge-ranges result)))
 
 (defun diff-minimap--process-hunk-lines (hunk-lines hunk-new-start)
   "Process HUNK-LINES and return changes list.
@@ -823,13 +824,78 @@ When `demap' is absent, behaves as `diff-minimap-toggle'."
         (diff-minimap-toggle)
         (demap-open)))))
 
+(defun diff-minimap--pulse-range (start end)
+  "Momentarily highlight lines from START to END (1-indexed, inclusive)."
+  (ignore-errors
+    (save-excursion
+      (goto-char (point-min))
+      (forward-line (1- start))
+      (let ((ov (make-overlay (point)
+                              (progn (forward-line (1+ (- end start)))
+                                     (point)))))
+        (pulse-momentary-highlight-overlay ov)))))
+
+;;;###autoload
+(defun diff-minimap-next-hunk ()
+  "Move point to the next diff hunk.
+Uses the configured `diff-minimap-diff-backend' to find hunks."
+  (interactive)
+  (let* ((data (diff-minimap--collect-diff-data))
+         (current (line-number-at-pos))
+         (next (catch 'found
+                 (dolist (h data)
+                   (let ((start (nth 1 h)))
+                     (when (> start current)
+                       (throw 'found h)))))))
+    (if next
+        (let ((start (nth 1 next))
+              (end (nth 2 next)))
+          (goto-char (point-min))
+          (forward-line (1- start))
+          (recenter)
+          (diff-minimap--pulse-range start end))
+      (user-error "No next hunk"))))
+
+;;;###autoload
+(defun diff-minimap-previous-hunk ()
+  "Move point to the previous diff hunk.
+Uses the configured `diff-minimap-diff-backend' to find hunks."
+  (interactive)
+  (let* ((data (diff-minimap--collect-diff-data))
+         (current (line-number-at-pos))
+         (prev nil))
+    (dolist (h data)
+      (let ((start (nth 1 h)))
+        (when (< start current)
+          (setq prev h))))
+    (if prev
+        (let ((start (nth 1 prev))
+              (end (nth 2 prev)))
+          (goto-char (point-min))
+          (forward-line (1- start))
+          (recenter)
+          (diff-minimap--pulse-range start end))
+      (user-error "No previous hunk"))))
+
+(defvar diff-minimap-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "M-]") #'diff-minimap-next-hunk)
+    (define-key map (kbd "M-[") #'diff-minimap-previous-hunk)
+    map)
+  "Keymap for `diff-minimap-mode'.
+Bound keys:
+\\{diff-minimap-mode-map}")
+
 ;;;###autoload
 (define-minor-mode diff-minimap-mode
   "Global minor mode keeping the diff minimap in sync.
 When active, the minimap follows the selected buffer and updates on
-scroll, edit, save, and buffer switch — no need to toggle per buffer."
+scroll, edit, save, buffer switch, and hunk navigation — no need to
+toggle per buffer.
+\\{diff-minimap-mode-map}"
   :lighter " DMap"
   :global t
+  :keymap diff-minimap-mode-map
   (if diff-minimap-mode
       (progn
         (add-hook 'post-command-hook #'diff-minimap--post-command)
@@ -840,6 +906,8 @@ scroll, edit, save, and buffer switch — no need to toggle per buffer."
 
 (define-key vc-prefix-map (kbd "m") #'diff-minimap-toggle)
 (define-key vc-prefix-map (kbd "M") #'diff-minimap-toggle-with-demap)
+(define-key vc-prefix-map "]" #'diff-minimap-next-hunk)
+(define-key vc-prefix-map "[" #'diff-minimap-previous-hunk)
 
 (provide 'diff-minimap)
 ;;; diff-minimap.el ends here

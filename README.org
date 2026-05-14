@@ -31,6 +31,22 @@ The minor mode =diff-minimap-mode= is automatically activated when the minimap o
 
 Click any row in the minimap to jump the source buffer to that line.
 
+** Hunk navigation
+
+~diff-minimap-next-hunk~ and ~diff-minimap-previous-hunk~ jump between
+diff hunks using the configured backend.  Two sets of keybindings are
+available when the minimap is open:
+
+| Keybinding | Command                          |
+|------------+----------------------------------|
+| =C-x v ]=  | =diff-minimap-next-hunk=         |
+| =C-x v [=  | =diff-minimap-previous-hunk=     |
+| =M-]=      | =diff-minimap-next-hunk=         |
+| =M-[=      | =diff-minimap-previous-hunk=     |
+
+The =M-]= and =M-[= bindings are in =diff-minimap-mode-map= so they are
+only active while the minimap minor mode is enabled.
+
 * Demap integration
 
 If you also use the =demap= minimap package, the ~diff-minimap-toggle-with-demap~ command opens demap on the right and diff-minimap on the left (set =diff-minimap-side= to ='left= beforehand) for a VSCode-like split: demap shows a zoomed-out code overview, diff-minimap shows the colour-coded diff ribbon.
