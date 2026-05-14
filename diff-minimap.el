@@ -113,6 +113,12 @@ using the same diff data backend as the minimap."
                  (const :tag "Right fringe" right))
   :group 'diff-minimap)
 
+(defcustom diff-minimap-search-highlights t
+  "Highlight isearch matches in the minimap as yellow bars.
+Disabled when nil."
+  :type 'boolean
+  :group 'diff-minimap)
+
 (defcustom diff-minimap-colour-source 'diff-hl
   "Which face colours to use for diff highlights in the minimap.
 `diff-hl' — prefer =diff-hl-insert/change/deleted= fringe faces (fallback
@@ -140,6 +146,11 @@ using the same diff data backend as the minimap."
 (defface diff-minimap-fringe-removed
   '((t :foreground "#660000"))
   "Face for removed-line fringe indicator."
+  :group 'diff-minimap)
+
+(defface diff-minimap-search-face
+  '((t :background "#ffff00" :extend t))
+  "Face for search-match highlights in the minimap."
   :group 'diff-minimap)
 
 (defvar-local diff-minimap--last-tick nil
@@ -835,6 +846,45 @@ When `demap' is absent, behaves as `diff-minimap-toggle'."
                                      (point)))))
         (pulse-momentary-highlight-overlay ov)))))
 
+
+;;; Search-match highlights in the minimap
+
+(defun diff-minimap--search-clear ()
+  "Remove all search-match overlays from the minimap buffer."
+  (let ((mm-buf (get-buffer diff-minimap--buffer-name)))
+    (when mm-buf
+      (with-current-buffer mm-buf
+        (dolist (ov (overlays-in (point-min) (point-max)))
+          (when (overlay-get ov 'diff-minimap-search)
+            (delete-overlay ov)))))))
+
+(defun diff-minimap--search-update ()
+  "Update search-match highlights in the minimap buffer."
+  (when (and diff-minimap-search-highlights
+             isearch-mode
+             (not (string-empty-p isearch-string))
+             (get-buffer-window diff-minimap--buffer-name))
+    (let ((mm-buf (get-buffer diff-minimap--buffer-name)))
+      (when (and mm-buf diff-minimap--last-nrows)
+        (diff-minimap--search-clear)
+        (let* ((total (diff-minimap--buffer-lines))
+               (scale (/ (float total) diff-minimap--last-nrows))
+               (regexp (if isearch-regexp isearch-string
+                         (regexp-quote isearch-string))))
+          (save-excursion
+            (goto-char (point-min))
+            (while (re-search-forward regexp nil t)
+              (let* ((line (line-number-at-pos (match-beginning 0)))
+                     (row (min (1- diff-minimap--last-nrows)
+                               (floor (/ (1- line) scale)))))
+                (with-current-buffer mm-buf
+                  (let ((ov (make-overlay (diff-minimap--row->pos row)
+                                          (diff-minimap--row->pos (1+ row))
+                                          mm-buf)))
+                    (overlay-put ov 'face 'diff-minimap-search-face)
+                    (overlay-put ov 'priority 4)
+                    (overlay-put ov 'diff-minimap-search t)))))))))))
+
 ;;;###autoload
 (defun diff-minimap-next-hunk ()
   "Move point to the next diff hunk.
@@ -899,9 +949,13 @@ toggle per buffer.
   (if diff-minimap-mode
       (progn
         (add-hook 'post-command-hook #'diff-minimap--post-command)
-        (add-hook 'after-save-hook #'diff-minimap--after-save))
+        (add-hook 'after-save-hook #'diff-minimap--after-save)
+        (add-hook 'isearch-update-post-hook #'diff-minimap--search-update)
+        (add-hook 'isearch-mode-end-hook #'diff-minimap--search-clear))
     (remove-hook 'post-command-hook #'diff-minimap--post-command)
     (remove-hook 'after-save-hook #'diff-minimap--after-save)
+    (remove-hook 'isearch-update-post-hook #'diff-minimap--search-update)
+    (remove-hook 'isearch-mode-end-hook #'diff-minimap--search-clear)
     (setq diff-minimap--last-buffer nil)))
 
 (define-key vc-prefix-map (kbd "m") #'diff-minimap-toggle)

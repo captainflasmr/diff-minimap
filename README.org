@@ -86,6 +86,7 @@ Set it in your config:
 | =diff-minimap-diff-backend=      | 'auto        | Diff data source: =auto=, =diff-hl=, or =vc=                 |
 | =diff-minimap-fringe-indicators= | t            | Show coloured fringe bitmaps on changed lines                |
 | =diff-minimap-fringe-side=       | 'left        | Which fringe (=left= or =right=)                             |
+| =diff-minimap-search-highlights= | t            | Show isearch matches as yellow bars in the minimap           |
 | =diff-minimap-colour-source=     | 'diff-hl     | Prefer =diff-hl= fringe faces or built-in =diff= faces       |
 
 See the [[#stipple-patterns][stipple pattern table]] below for predefined values.
@@ -142,6 +143,20 @@ To disable fringe indicators entirely:
 
 #+begin_src emacs-lisp
 (setq diff-minimap-fringe-indicators nil)
+#+end_src
+
+** Search highlights
+
+When =diff-minimap-search-highlights= is non-nil (the default), every
+isearch match appears as a yellow bar in the minimap at the
+corresponding row.  The highlights update live on each keystroke, so you
+can see where matches are across the file without scrolling.  They
+disappear when isearch exits.
+
+To disable:
+
+#+begin_src emacs-lisp
+(setq diff-minimap-search-highlights nil)
 #+end_src
 
 * How it works

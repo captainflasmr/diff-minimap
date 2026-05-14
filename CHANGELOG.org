@@ -18,7 +18,8 @@ Optional diff-hl, VC backend, built-in fringe indicators.
 - Add =diff-minimap-fringe-indicators= (t / nil) — when enabled, the package paints coloured fringe bitmaps in the source buffer on every changed line, matching the minimap colours.  Works with any backend.
 - Add =diff-minimap-fringe-side= (=left= | =right=) to choose which fringe holds the indicators.
 - Fix =diff-minimap--cache-faces= crash when =diff-hl= faces are undefined (guard =face-attribute= calls with =facep=).
-- Add =diff-minimap-next-hunk= and =diff-minimap-previous-hunk= for navigating between diff hunks (uses =pulse= for a momentary line highlight on arrival).  Bound to =C-x v ]= and =C-x v [= (vc-prefix-map) and =M-]= / =M-[= (minor-mode map).
+- Add =diff-minimap-next-hunk= and =diff-minimap-previous-hunk= for navigating between diff hunks (pulses the full hunk range on arrival).  Bound to =C-x v ]= and =C-x v [= (vc-prefix-map) and =M-]= / =M-[= (minor-mode map).
+- Add =diff-minimap-search-highlights= (t / nil) — when enabled, isearch matches appear as yellow bars in the minimap, updated live on every keystroke.
 - Fix =diff-minimap--parse-git-diff= merge-ranges bug with adjacent hunks of the same type (input order was reversed before merging).
 
 ** 0.4.0 — <2026-05-10>
