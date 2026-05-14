@@ -10,13 +10,11 @@ This document contains the current bugs/improvements, this is just for me mainly
 
 * Bugs/Improvements
 
-** TODO side-bar to work without diff-hl?
+** DOING side-bar to work without diff-hl?
 
 ** TODO mouse scrolling in viewport
 
 ** TODO complement demap
-
-** TODO add box overlay showing diff underneath
 
 ** TODO add automated unit tests
 

@@ -10,6 +10,15 @@ This document contains the release notes for diff-minimap.
 
 * Versions
 
+** 0.5.0 — <2026-05-14>
+
+Optional diff-hl, VC backend, built-in fringe indicators.
+
+- Remove hard dependency on =diff-hl= — the minimap now runs without it.  Add =diff-minimap-diff-backend= (=auto= | =diff-hl= | =vc=) to choose the diff-data source.  =auto= tries =diff-hl= first then falls back to git.  =vc= uses git directly (no =diff-hl= required).
+- Add =diff-minimap-fringe-indicators= (t / nil) — when enabled, the package paints coloured fringe bitmaps in the source buffer on every changed line, matching the minimap colours.  Works with any backend.
+- Add =diff-minimap-fringe-side= (=left= | =right=) to choose which fringe holds the indicators.
+- Fix =diff-minimap--cache-faces= crash when =diff-hl= faces are undefined (guard =face-attribute= calls with =facep=).
+
 ** 0.4.0 — <2026-05-10>
 
 Overlay priority layering, filled default, demap integration, and removal of outline.
@@ -24,9 +33,7 @@ Overlay priority layering, filled default, demap integration, and removal of out
 
 Global mode, multi-buffer support, and rendering accuracy.
 
-- Change =diff-minimap-mode= from buffer-local to global — once toggled on,
-  the minimap follows the selected buffer and updates automatically on
-  switch. No need to toggle per file.
+- Change =diff-minimap-mode= from buffer-local to global — once toggled on, the minimap follows the selected buffer and updates automatically on switch. No need to toggle per file.
 - Handle Dired and other buffers without =diff-hl-mode=: the minimap content is cleared on entry, re-rendered on return to a file buffer.
 - Protect minimap window from =delete-other-windows= (=C-x 1=) via explicit =no-delete-other-windows= window parameter.
 - Protect minimap window width from =split-window-right= (=C-x 3=) via =window-size-fixed= buffer-locally in the minimap buffer.

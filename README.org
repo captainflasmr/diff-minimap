@@ -5,7 +5,7 @@
 #+options: ':t toc:2 num:nil
 #+startup: showall
 
-A VSCode-style minimap for Emacs that colour-codes every line by its diff-hl status (added, changed, removed) while also marking the visible viewport and current cursor row.  Can be used standalone or alongside =demap= for a two-panel minimap layout.
+A VSCode-style minimap for Emacs that colour-codes every line by its diff status (added, changed, removed) while also marking the visible viewport and current cursor row.  Can use =diff-hl= overlays or git directly as the diff-data source.  Optionally paints coloured fringe indicators in the source buffer.  Can be used standalone or alongside =demap= for a two-panel minimap layout.
 
 * Installation
 
@@ -27,7 +27,7 @@ Or with =use-package= (no =:ensure= since it is a local package):
 
 ~M-x diff-minimap-toggle~ or ~C-x v m~ opens the minimap in a side window.  The same command closes it.
 
-The minor mode =diff-minimap-mode= is automatically activated when the minimap opens and deactivated when it closes.  It is a global mode — once toggled on, the minimap follows the selected buffer automatically, re-rendering for each file that has =diff-hl-mode= enabled, and clearing when entering Dired or other non-diff buffers.
+The minor mode =diff-minimap-mode= is automatically activated when the minimap opens and deactivated when it closes.  It is a global mode — once toggled on, the minimap follows the selected buffer automatically, re-rendering for each file that has a diff backend available, and clearing when entering Dired or other buffers without changes.
 
 Click any row in the minimap to jump the source buffer to that line.
 
@@ -60,14 +60,17 @@ Set it in your config:
 
 ** User options
 
-| Variable                       | Default      | Description                                                  |
-|--------------------------------+--------------+--------------------------------------------------------------|
-| =diff-minimap-font-scale=      | 0.1          | Fraction of default font height for the minimap (1.0 normal) |
-| =diff-minimap-width=           | 6            | Width in characters of the side window (at the small font)   |
-| =diff-minimap-side=            | 'right       | Side to display the minimap (=left= or =right=)              |
-| =diff-minimap-viewport-style=  | 'filled      | How to render the viewport indicator (see above)             |
-| =diff-minimap-stipple-pattern= | 'dots-sparse | Bitmap pattern for the =stipple= viewport style              |
-| =diff-minimap-colour-source=   | 'diff-hl     | Prefer =diff-hl= fringe faces or built-in =diff= faces       |
+| Variable                         | Default      | Description                                                  |
+|----------------------------------+--------------+--------------------------------------------------------------|
+| =diff-minimap-font-scale=        | 0.1          | Fraction of default font height for the minimap (1.0 normal) |
+| =diff-minimap-width=             | 6            | Width in characters of the side window (at the small font)   |
+| =diff-minimap-side=              | 'right       | Side to display the minimap (=left= or =right=)              |
+| =diff-minimap-viewport-style=    | 'filled      | How to render the viewport indicator (see above)             |
+| =diff-minimap-stipple-pattern=   | 'dots-sparse | Bitmap pattern for the =stipple= viewport style              |
+| =diff-minimap-diff-backend=      | 'auto        | Diff data source: =auto=, =diff-hl=, or =vc=                 |
+| =diff-minimap-fringe-indicators= | t            | Show coloured fringe bitmaps on changed lines                |
+| =diff-minimap-fringe-side=       | 'left        | Which fringe (=left= or =right=)                             |
+| =diff-minimap-colour-source=     | 'diff-hl     | Prefer =diff-hl= fringe faces or built-in =diff= faces       |
 
 See the [[#stipple-patterns][stipple pattern table]] below for predefined values.
 
@@ -101,19 +104,44 @@ Both paths end with the same hardcoded hex fallbacks (=#006600=, =#666600=, =#66
 
 Other derived colours (=norm-bg=, =view-bg=, =cur-bg=) always come from =fringe=, =region=, and =cursor= respectively.
 
+** Diff backends
+
+The =diff-minimap-diff-backend= option controls where the minimap gets its diff data:
+
+- =auto= (default) — tries =diff-hl= overlays first; if =diff-hl-mode= is not active, falls back to the git-based VC backend.
+- =diff-hl= — reads =diff-hl= =diff-hl-hunk-type= overlay properties.  Requires =diff-hl= to be loaded and =diff-hl-mode= enabled.
+- =vc= — runs =git diff --unified=0 HEAD= directly.  No =diff-hl= needed at all.  Works on any file tracked in a git repository.
+
+The VC backend parses unified diff output into per-line change types (added / changed / removed) and supports both tracked files with uncommitted changes and staged files.
+
+** Fringe indicators
+
+When =diff-minimap-fringe-indicators= is non-nil (the default), the package paints coloured fringe bitmaps in the source buffer on every changed line, matching the minimap colours.  Three distinct bitmap shapes distinguish the diff types: full-width bar for additions, mid-width bar for changes, narrow bar for removals.
+
+Set =diff-minimap-fringe-side= to ='left= (default) or ='right= to choose which fringe holds the indicators.
+
+The fringe faces are updated whenever the minimap re-caches its colours (on theme switch, buffer switch, or explicit render), so they always stay in sync with the minimap palette.
+
+To disable fringe indicators entirely:
+
+#+begin_src emacs-lisp
+(setq diff-minimap-fringe-indicators nil)
+#+end_src
+
 * How it works
 
 The minimap buffer is written once by =diff-minimap--render=, which:
 
-1. Scans every =diff-hl-hunk= overlay in the source buffer.
+1. Collects diff data from the configured backend (=diff-hl= overlays or =git diff=).
 2. Maps source lines to minimap rows via a scale factor: =total-source-lines / minimap-rows=.
 3. Paints each minimap row with an =:extend t= background face (normal background from =fringe=).
-4. Applies diff colours as overlays (priority 3) on rows the source has =diff-hl= hunks for — inserted (green), changed (yellow), removed (red).
-5. Stores =source-line= and =source-buf= text properties on each row for click-to-jump.
+4. Applies diff colours as overlays (priority 3) on rows the backend reports as changed — inserted (green), changed (yellow), removed (red).
+5. Paints fringe bitmaps in the source buffer on every changed line (when =diff-minimap-fringe-indicators= is non-nil).
+6. Stores =source-line= and =source-buf= text properties on each row for click-to-jump.
 
 The viewport indicator and cursor marker are then drawn as Emacs overlays on top of the minimap buffer — they are updated on every =post-command-hook= by =diff-minimap--update-viewport= (no buffer text is touched).
 
-The mode is global: the minimap window lives on one side of the frame and its content follows the selected buffer.  Switching to a file with =diff-hl-mode= triggers a full render; switching to Dired or a buffer without =diff-hl-mode= clears the minimap until a file buffer is selected again.
+The mode is global: the minimap window lives on one side of the frame and its content follows the selected buffer.  Switching to a file with an available backend triggers a full render; switching to Dired or a buffer without changes clears the minimap until a file buffer is selected again.
 
 A full re-render (=diff-minimap--render=) is triggered only when:
 
@@ -126,9 +154,10 @@ Face colours are cached in =defvar=s so the nine =face-attribute= calls run once
 * Dependencies
 
 - Emacs 27.1+
-- =diff-hl= (required at runtime; the minimap is a no-op when
-  =diff-hl-mode= is not active)
 - =cl-lib= (built-in)
+- =diff-hl= (optional — only needed for the =diff-hl= backend; the
+  =vc= backend works standalone.  When present, =diff-hl= continues to
+  provide fringe diff indicators independently of the minimap.)
 
 * Changelog
 

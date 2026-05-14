@@ -2,7 +2,7 @@
 ;;
 ;; Author: James Dyer <captainflasmr@gmail.com>
 ;; Version: 0.4.0
-;; Package-Requires: ((emacs "27.1") (diff-hl "0.9"))
+;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: vc, tools, convenience
 ;; URL: https://github.com/captainflasmr/diff-minimap
 ;;
@@ -24,7 +24,7 @@
 ;;; Commentary:
 ;;
 ;; diff-minimap renders a tiny side-window minimap that colour-codes every
-;; line according to its diff-hl status (added / changed / removed) while
+;; line according to its diff status (added / changed / removed) while
 ;; also marking the visible viewport and current cursor row.
 ;;
 ;; Quick start:
@@ -41,8 +41,9 @@
 ;;
 ;;; Code:
 
-(require 'diff-hl)
 (require 'cl-lib)
+
+(defvar diff-hl-mode)
 
 (defgroup diff-minimap nil
   "VSCode-style minimap showing diff regions across the entire buffer."
@@ -88,17 +89,56 @@ is a string of XBM bitmap bytes (left-to-right, top-to-bottom)."
                        (string :tag "XBM data")))
   :group 'diff-minimap)
 
+(defcustom diff-minimap-diff-backend 'auto
+  "Which backend to use for collecting diff data.
+`auto' — try `diff-hl' first, fall back to git.
+`diff-hl' — use diff-hl overlays (requires `diff-hl-mode').
+`vc'    — use VC system (currently git only)."
+  :type '(choice (const :tag "Auto-detect (diff-hl > git)" auto)
+                 (const :tag "diff-hl overlays" diff-hl)
+                 (const :tag "VC (git)" vc))
+  :group 'diff-minimap)
+
+(defcustom diff-minimap-fringe-indicators t
+  "Whether to show diff indicators in the fringe of the source buffer.
+When enabled, coloured fringe bitmaps appear on lines with changes,
+using the same diff data backend as the minimap."
+  :type 'boolean
+  :group 'diff-minimap)
+
+(defcustom diff-minimap-fringe-side 'left
+  "Which fringe to show diff indicators in."
+  :type '(choice (const :tag "Left fringe" left)
+                 (const :tag "Right fringe" right))
+  :group 'diff-minimap)
+
 (defcustom diff-minimap-colour-source 'diff-hl
   "Which face colours to use for diff highlights in the minimap.
-`diff-hl' — prefer =diff-hl-insert/change/deleted= fringe faces.
+`diff-hl' — prefer =diff-hl-insert/change/deleted= fringe faces (fallback
+            to built-in diff faces, then hardcoded defaults).
 `diff'    — prefer built-in =diff-added/changed/removed= faces."
   :type '(choice (const :tag "diff-hl fringe colours" diff-hl)
-                 (const :tag "Built-in diff colours" diff))
+                  (const :tag "Built-in diff colours" diff))
   :group 'diff-minimap)
 
 (defface diff-minimap-font
   '((t :height 0.4 :inherit default))
   "Face used for the minimap buffer — tiny font for fine-grained display."
+  :group 'diff-minimap)
+
+(defface diff-minimap-fringe-added
+  '((t :foreground "#006600"))
+  "Face for added-line fringe indicator."
+  :group 'diff-minimap)
+
+(defface diff-minimap-fringe-changed
+  '((t :foreground "#666600"))
+  "Face for changed-line fringe indicator."
+  :group 'diff-minimap)
+
+(defface diff-minimap-fringe-removed
+  '((t :foreground "#660000"))
+  "Face for removed-line fringe indicator."
   :group 'diff-minimap)
 
 (defvar-local diff-minimap--last-tick nil
@@ -157,6 +197,19 @@ is a string of XBM bitmap bytes (left-to-right, top-to-bottom)."
   (list 8 8 (apply #'string '(#x88 #x22 #x88 #x22 #x88 #x22 #x88 #x22)))
   "Denser dot pattern, ~25% coverage.")
 
+;; Fringe bitmaps for diff indicators.
+(define-fringe-bitmap 'diff-minimap--bmp-added
+  [255 255 255 255 255 255 255 255]
+  nil nil '(center t))
+
+(define-fringe-bitmap 'diff-minimap--bmp-changed
+  [126 126 126 126 126 126 126 126]
+  nil nil '(center t))
+
+(define-fringe-bitmap 'diff-minimap--bmp-removed
+  [60 60 60 60 60 60 60 60]
+  nil nil '(center t))
+
 (defun diff-minimap--resolve-stipple ()
   "Return the stipple bitmap data for `diff-minimap-stipple-pattern'."
   (pcase diff-minimap-stipple-pattern
@@ -180,9 +233,11 @@ Accounts for the trailing newline that Emacs adds on save."
   "Compute and cache face colours used by the minimap.
 Respects `diff-minimap-colour-source' for diff highlight priority."
   (let ((fbg (lambda (f attr d)
-               (let ((v (face-attribute f attr nil t)))
-                 (if (or (not v) (eq v 'unspecified) (not (stringp v)))
-                     d v)))))
+               (if (facep f)
+                   (let ((v (face-attribute f attr nil t)))
+                     (if (or (not v) (eq v 'unspecified) (not (stringp v)))
+                         d v))
+                 d))))
     (setq diff-minimap--norm-bg (funcall fbg 'fringe :background "#1a1a1a"))
     (setq diff-minimap--view-bg (funcall fbg 'region :background "#404060"))
     (if (eq diff-minimap-colour-source 'diff-hl)
@@ -199,7 +254,206 @@ Respects `diff-minimap-colour-source' for diff highlight priority."
                                            (funcall fbg 'diff-hl-change :background "#666600")))
       (setq diff-minimap--del-bg  (funcall fbg 'diff-removed :background
                                            (funcall fbg 'diff-hl-delete :background "#660000"))))
-    (setq diff-minimap--cur-bg  (funcall fbg 'cursor :background "#00ffff"))))
+    (setq diff-minimap--cur-bg  (funcall fbg 'cursor :background "#00ffff"))
+    (when diff-minimap-fringe-indicators
+      (set-face-foreground 'diff-minimap-fringe-added diff-minimap--ins-bg nil)
+      (set-face-foreground 'diff-minimap-fringe-changed diff-minimap--chg-bg nil)
+      (set-face-foreground 'diff-minimap-fringe-removed diff-minimap--del-bg nil))))
+
+
+;;; Diff data backends
+
+(defun diff-minimap--backend-available-p ()
+  "Return t if the configured diff backend is available."
+  (pcase diff-minimap-diff-backend
+    ('diff-hl (bound-and-true-p diff-hl-mode))
+    ('vc (and (buffer-file-name) (executable-find "git")))
+    ('auto (or (bound-and-true-p diff-hl-mode)
+               (and (buffer-file-name) (executable-find "git"))))))
+
+(defun diff-minimap--collect-diff-data ()
+  "Collect diff data from the configured backend.
+Returns a list of (TYPE START-LINE END-LINE) where TYPE is
+`added', `changed', or `removed', and START-LINE/END-LINE are
+1-indexed inclusive line numbers in the current buffer.
+Returns nil when no backend is available or no changes exist."
+  (pcase diff-minimap-diff-backend
+    ('diff-hl (diff-minimap--collect-from-diff-hl))
+    ('vc (diff-minimap--collect-from-vc))
+    ('auto (or (diff-minimap--collect-from-diff-hl)
+               (diff-minimap--collect-from-vc)))))
+
+(defun diff-minimap--collect-from-diff-hl ()
+  "Collect diff data from `diff-hl' overlays.
+Returns a list of (TYPE START-LINE END-LINE) or nil."
+  (when (bound-and-true-p diff-hl-mode)
+    (let ((result nil))
+      (dolist (ov (overlays-in (point-min) (point-max)))
+        (let ((ty (overlay-get ov 'diff-hl-hunk-type)))
+          (when (or ty (overlay-get ov 'diff-hl-hunk))
+            (let* ((st (overlay-start ov))
+                   (en (overlay-end ov))
+                   (raw-ty (or ty 'change))
+                   (ty (pcase (format "%s" raw-ty)
+                        ((or "insert" "add" "added") 'added)
+                        ((or "delete" "removed" "remove") 'removed)
+                        (_ 'changed))))
+              (when (and st en)
+                (save-excursion
+                  (goto-char st)
+                  (let* ((sl (line-number-at-pos))
+                         (el (if (eq ty 'removed) sl
+                               (progn (goto-char en)
+                                      (if (bolp) (1- (line-number-at-pos))
+                                        (line-number-at-pos))))))
+                    (push (list ty sl el) result))))))))
+      result)))
+
+(defun diff-minimap--collect-from-vc ()
+  "Collect diff data using git.
+Returns a list of (TYPE START-LINE END-LINE) or nil."
+  (when-let ((file (buffer-file-name)))
+    (let* ((default-directory (file-name-directory file))
+           (git (executable-find "git")))
+      (when git
+        (let* ((rel-file (file-relative-name file))
+               (output
+                (or (diff-minimap--git-diff
+                     (format "diff --no-color --unified=0 HEAD -- %s"
+                             (shell-quote-argument rel-file)))
+                    (diff-minimap--git-diff
+                     (format "diff --no-color --unified=0 --cached -- %s"
+                             (shell-quote-argument rel-file))))))
+          (when output
+            (diff-minimap--parse-git-diff (split-string output "\n" t))))))))
+
+(defun diff-minimap--git-diff (command)
+  "Run git COMMAND and return stdout as string, or nil on failure."
+  (ignore-errors
+    (with-temp-buffer
+      (let ((exit-code (apply #'process-file "git" nil t nil
+                              (split-string-and-unquote command))))
+        (unless (<= exit-code 1)
+          (error "git command failed: exit %d" exit-code)))
+      (let ((s (buffer-string)))
+        (unless (string-empty-p s) s)))))
+
+(defun diff-minimap--parse-git-diff (lines)
+  "Parse git diff LINES and return list of (TYPE START END).
+Each type is `added', `changed', or `removed' with 1-indexed
+inclusive line numbers in the current buffer."
+  (let ((result nil)
+        (new-line nil)
+        (hunk-lines nil)
+        (hunk-new-start nil))
+    (dolist (line lines)
+      (cond
+       ((string-match "^@@ -\\([0-9]+\\),?\\([0-9]*\\) \\+\\([0-9]+\\),?\\([0-9]*\\) @@" line)
+        (when hunk-lines
+          (setq result (nconc result
+                              (diff-minimap--process-hunk-lines
+                               (nreverse hunk-lines) hunk-new-start)))
+          (setq hunk-lines nil))
+        (setq new-line (string-to-number (match-string 3 line))
+              hunk-new-start new-line))
+       (new-line
+        (push (cons (substring line 0 1) new-line) hunk-lines)
+        (when (string-match "^\\([+ ]\\)" line)
+          (cl-incf new-line)))))
+    (when hunk-lines
+      (setq result (nconc result
+                          (diff-minimap--process-hunk-lines
+                           (nreverse hunk-lines) hunk-new-start))))
+    (diff-minimap--merge-ranges (nreverse result))))
+
+(defun diff-minimap--process-hunk-lines (hunk-lines hunk-new-start)
+  "Process HUNK-LINES and return changes list.
+HUNK-LINES is a list of (PREFIX . NEW-LINE-NUM).
+HUNK-NEW-START is the starting new-line number."
+  (let ((has-minus (cl-some (lambda (l) (string= (car l) "-")) hunk-lines))
+        (has-plus (cl-some (lambda (l) (string= (car l) "+")) hunk-lines))
+        (result nil)
+        (current-type nil)
+        (current-start nil)
+        (current-end nil))
+    (when has-plus
+      (let ((type (if has-minus 'changed 'added)))
+        (dolist (hl hunk-lines)
+          (when (string= (car hl) "+")
+            (let ((line (cdr hl)))
+              (if (and (eq type current-type) (= line (1+ current-end)))
+                  (setq current-end line)
+                (when current-type
+                  (push (list current-type current-start current-end) result))
+                (setq current-type type
+                      current-start line
+                      current-end line)))))
+        (when current-type
+          (push (list current-type current-start current-end) result))))
+    (when (and has-minus (not has-plus))
+      (push (list 'removed hunk-new-start hunk-new-start) result))
+    (nreverse result)))
+
+(defun diff-minimap--merge-ranges (changes)
+  "Merge adjacent ranges of the same type in CHANGES."
+  (when changes
+    (let ((merged (list (car changes))))
+      (dolist (c (cdr changes) (nreverse merged))
+        (let* ((last (car merged))
+               (l-type (car last))
+               (l-end (nth 2 last))
+               (c-type (car c))
+               (c-start (nth 1 c))
+               (c-end (nth 2 c)))
+          (if (and (eq l-type c-type) (<= c-start (1+ l-end)))
+              (setcdr (cdr last) (list (max l-end c-end)))
+            (push c merged)))))))
+
+
+;;; Fringe indicators
+
+(defun diff-minimap--fringe-display (bmp face)
+  "Return fringe display spec for bitmap BMP using FACE."
+  (if (eq diff-minimap-fringe-side 'left)
+      `(left-fringe ,bmp ,face)
+    `(right-fringe ,bmp ,face)))
+
+(defun diff-minimap--fringe-clear ()
+  "Remove all fringe indicator overlays from the current buffer."
+  (dolist (ov (overlays-in (point-min) (point-max)))
+    (when (overlay-get ov 'diff-minimap-fringe)
+      (delete-overlay ov))))
+
+(defun diff-minimap--fringe-update (diff-data)
+  "Create fringe indicator overlays from DIFF-DATA.
+DIFF-DATA is a list of (TYPE START END) as returned by
+`diff-minimap--collect-diff-data'.  Removes old fringe overlays first."
+  (diff-minimap--fringe-clear)
+  (when diff-minimap-fringe-indicators
+    (dolist (change diff-data)
+      (let* ((ty (car change))
+             (start (nth 1 change))
+             (end (nth 2 change))
+             (bmp (pcase ty
+                    ('added 'diff-minimap--bmp-added)
+                    ('changed 'diff-minimap--bmp-changed)
+                    ('removed 'diff-minimap--bmp-removed)))
+             (face (pcase ty
+                     ('added 'diff-minimap-fringe-added)
+                     ('changed 'diff-minimap-fringe-changed)
+                     ('removed 'diff-minimap-fringe-removed))))
+        (when bmp
+          (save-excursion
+            (goto-char (point-min))
+            (forward-line (1- start))
+            (cl-loop for l from start to end
+                     do (let ((ov (make-overlay (line-beginning-position)
+                                                (1+ (line-beginning-position)))))
+                          (overlay-put ov 'before-string
+                                       (propertize " " 'display
+                                                   (diff-minimap--fringe-display bmp face)))
+                          (overlay-put ov 'diff-minimap-fringe t))
+                     (forward-line 1))))))))
 
 (defun diff-minimap--row->pos (row)
   "Return buffer position at the start of minimap ROW (0-indexed)."
@@ -330,7 +584,7 @@ Called on every command — cheap overlay moves, not a full rebuild."
                    (overlay-put diff-minimap--viewport-edge-top
                                 'diff-minimap-overlay t))
                  (overlay-put diff-minimap--viewport-edge-top 'face
-                              `(:background ,diff-minimap--view-bg :extend t))
+                               `(:background ,diff-minimap--view-bg :extend t))
                  (overlay-put diff-minimap--viewport-edge-top 'priority 5)
                  (if diff-minimap--viewport-edge-bottom
                      (move-overlay diff-minimap--viewport-edge-bottom
@@ -369,7 +623,7 @@ Viewport and cursor highlights are applied as overlays by
   (diff-minimap--cache-faces)
   (let ((mm-buf (get-buffer-create diff-minimap--buffer-name))
         (this-buf (current-buffer)))
-    (when (and (bound-and-true-p diff-hl-mode)
+    (when (and (diff-minimap--backend-available-p)
                (get-buffer-window mm-buf))
       (let* ((total (with-current-buffer this-buf
                        (diff-minimap--buffer-lines)))
@@ -382,34 +636,23 @@ Viewport and cursor highlights are applied as overlays by
                                         (or mm-win src-win) t)
                                        row-px)))))
              (scale (/ (float total) nrows))
-             (row-diff (make-vector nrows nil)))
+             (row-diff (make-vector nrows nil))
+             (diff-data (with-current-buffer this-buf
+                          (diff-minimap--collect-diff-data))))
         (setq diff-minimap--last-nrows nrows
               diff-minimap--last-themes (and (boundp 'custom-enabled-themes)
                                               custom-enabled-themes))
         (with-current-buffer this-buf
           (setq diff-minimap--last-tick (buffer-chars-modified-tick))
-          (dolist (ov (overlays-in (point-min) (point-max)))
-            (let ((ty (overlay-get ov 'diff-hl-hunk-type)))
-              (when (or ty (overlay-get ov 'diff-hl-hunk))
-                (let* ((st (overlay-start ov))
-                       (en (overlay-end ov))
-                       (raw-ty (or ty 'change))
-                       (ty (pcase (format "%s" raw-ty)
-                             ((or "insert" "add" "added") 'added)
-                             ((or "delete" "removed" "remove") 'removed)
-                             (_ 'changed))))
-                  (when (and st en)
-                    (save-excursion
-                      (goto-char st)
-                      (let* ((sl (line-number-at-pos))
-                             (el (if (eq ty 'removed) sl
-                                   (progn (goto-char en)
-                                          (if (bolp) (1- (line-number-at-pos))
-                                            (line-number-at-pos))))))
-                        (let ((fr (floor (/ (1- sl) scale)))
-                              (lr (min (1- nrows) (floor (/ el scale)))))
-                          (cl-loop for r from fr to lr
-                                   do (aset row-diff r ty)))))))))))
+          (dolist (change diff-data)
+            (let* ((ty (car change))
+                   (sl (nth 1 change))
+                   (el (nth 2 change))
+                   (fr (floor (/ (1- sl) scale)))
+                   (lr (min (1- nrows) (floor (/ (1- el) scale)))))
+              (cl-loop for r from fr to lr
+                       do (aset row-diff r ty))))
+          (diff-minimap--fringe-update diff-data))
         ;; Write minimap content — normal background as text props,
         ;; then diff colours as overlays for proper priority layering.
         (let ((nrm-face `(:background ,diff-minimap--norm-bg :extend t))
@@ -454,14 +697,14 @@ Viewport and cursor highlights are applied as overlays by
 (defun diff-minimap--post-command ()
   "Immediate post-command-hook: update viewport/cursor overlays or full re-render.
 Detects buffer switches and re-renders for the new buffer automatically.
-Clears the minimap when entering a buffer without `diff-hl-mode'."
+Clears the minimap when entering a buffer with no diff backend."
   (when (get-buffer-window diff-minimap--buffer-name)
     (let ((buf (current-buffer))
           (mm-buf (get-buffer diff-minimap--buffer-name)))
       (when mm-buf
         (unless (eq buf diff-minimap--last-buffer)
           (setq diff-minimap--last-buffer buf)
-          (if (bound-and-true-p diff-hl-mode)
+          (if (diff-minimap--backend-available-p)
               (progn
                 (diff-minimap--render)
                 (run-with-timer
@@ -471,11 +714,13 @@ Clears the minimap when entering a buffer without `diff-hl-mode'."
                               (eq diff-minimap--last-buffer buf))
                      (with-current-buffer buf
                        (diff-minimap--render))))))
+            (with-current-buffer buf
+              (diff-minimap--fringe-clear))
             (with-current-buffer mm-buf
               (let ((inhibit-read-only t))
                 (erase-buffer)
                 (diff-minimap--clear-overlays))))))
-        (when (and (bound-and-true-p diff-hl-mode)
+        (when (and (diff-minimap--backend-available-p)
                    (eq buf diff-minimap--last-buffer))
           (let* ((tick (with-current-buffer buf
                          (buffer-chars-modified-tick)))
@@ -500,7 +745,7 @@ Clears the minimap when entering a buffer without `diff-hl-mode'."
               (diff-minimap--update-viewport)))))))
 
 (defun diff-minimap--after-save ()
-  "Force re-render after save (idle delay lets diff-hl catch up)."
+  "Force re-render after save (idle delay lets the backend catch up)."
   (let ((buf (current-buffer)))
     (run-with-idle-timer
      0.05 nil
@@ -529,7 +774,8 @@ Clears the minimap when entering a buffer without `diff-hl-mode'."
     (if (get-buffer-window mm-buf)
         (progn
           (diff-minimap-mode -1)
-          (delete-window (get-buffer-window mm-buf)))
+          (delete-window (get-buffer-window mm-buf))
+          (diff-minimap--fringe-clear))
       (let ((win (display-buffer-in-side-window
                   mm-buf
                   `((side . ,diff-minimap-side)
