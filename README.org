@@ -51,10 +51,15 @@ only active while the minimap minor mode is enabled.
 
 ** Inline diff preview
 
-~diff-minimap-show-hunk= (=C-c p=) opens a popup window at the bottom of
-the frame showing the `git diff` for the hunk at point, with syntax
-highlighting via =diff-mode=.  The preview shows 3 lines of context
-around the change and stays open until you press =q=.
+~diff-minimap-show-hunk= (=C-c p=) renders the `git diff` for the hunk
+at point as an inline overlay directly in the source buffer, highlighted
+via =diff-mode= font-lock.  The overlay appears above the hunk as virtual
+text — it never modifies the underlying buffer.
+
+Only the specific change group (the contiguous =-= /=+= block) containing
+point is shown, without surrounding context or unrelated changes from the
+same git hunk.  Call the command again to dismiss the overlay, or simply
+move point outside the hunk range and it disappears automatically.
 
 You can also right-click (=mouse-3=) on a minimap row to jump to the
 source line and show its diff preview in one step.

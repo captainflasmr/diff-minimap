@@ -1,7 +1,7 @@
 ;;; diff-minimap.el --- VSCode-style minimap showing diff regions -*- lexical-binding: t; -*-
 ;;
 ;; Author: James Dyer <captainflasmr@gmail.com>
-;; Version: 0.4.0
+;; Version: 0.6.0
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: vc, tools, convenience
 ;; URL: https://github.com/captainflasmr/diff-minimap
@@ -164,6 +164,11 @@ Disabled when nil."
   "Face for search-match highlights in the minimap."
   :group 'diff-minimap)
 
+(defface diff-minimap-hunk-region
+  '((t :inherit highlight :extend t))
+  "Face for the highlighted hunk region when showing inline preview."
+  :group 'diff-minimap)
+
 (defvar-local diff-minimap--last-tick nil
   "Buffer tick at last full render — for detecting content changes.")
 
@@ -187,6 +192,10 @@ Disabled when nil."
 
 (defvar diff-minimap--last-buffer nil
   "Last buffer shown in the minimap; used to detect switches.")
+
+(defvar-local diff-minimap--hunk-overlay nil
+  "Overlay for inline diff hunk preview in the source buffer.
+When non-nil, the preview is active.  Toggle with `diff-minimap-show-hunk'.")
 
 (defvar diff-minimap--buffer-name " *diff-minimap*"
   "Name of the hidden minimap buffer.")
@@ -765,7 +774,17 @@ Clears the minimap when entering a buffer with no diff backend."
                                               diff-minimap--last-themes)))))
             (if needs-full
                 (diff-minimap--render)
-              (diff-minimap--update-viewport)))))))
+              (diff-minimap--update-viewport))))))
+  ;; Auto-remove hunk overlay when point leaves the hunk range
+  (when (and diff-minimap--hunk-overlay
+             (overlay-buffer diff-minimap--hunk-overlay)
+             (eq (overlay-buffer diff-minimap--hunk-overlay) (current-buffer)))
+    (let ((ov-start (overlay-start diff-minimap--hunk-overlay))
+          (ov-end (overlay-end diff-minimap--hunk-overlay)))
+      (when (and ov-start ov-end
+                 (or (< (point) ov-start) (>= (point) ov-end)))
+        (delete-overlay diff-minimap--hunk-overlay)
+        (setq diff-minimap--hunk-overlay nil)))))
 
 (defun diff-minimap--after-save ()
   "Force re-render after save (idle delay lets the backend catch up)."
@@ -825,41 +844,103 @@ Returns the hunk text as a string, or nil if not found."
       (when (and hunk-start (<= hunk-start target-line (1- new-line)))
         (string-join (nreverse result) "\n")))))
 
+(defun diff-minimap--extract-sub-hunk (hunk-text target-line)
+  "From unified diff HUNK-TEXT, extract only the change group
+containing TARGET-LINE (new-file line number).
+A change group is a contiguous block of `-' and `+' lines separated
+by context lines.  Returns the condensed hunk or HUNK-TEXT as-is."
+  (let* ((lines (split-string hunk-text "\n"))
+         (header (car lines))
+         (body (cdr lines))
+         (new-line nil)
+         (groups nil)
+         (cur-start nil)
+         (cur-lines nil))
+    (when (string-match "^@@ -\\([0-9]+\\),?\\([0-9]*\\) \\+\\([0-9]+\\),?\\([0-9]*\\) @@" header)
+      (setq new-line (string-to-number (match-string 3 header)))
+      (dolist (line body)
+        (pcase (and (> (length line) 0) (substring line 0 1))
+          (" "
+           (when cur-start
+             (push (cons cur-start (nreverse cur-lines)) groups)
+             (setq cur-start nil cur-lines nil))
+           (cl-incf new-line))
+          ("-"
+           (unless cur-start (setq cur-start new-line))
+           (push line cur-lines))
+          ("+"
+           (unless cur-start (setq cur-start new-line))
+           (push line cur-lines)
+           (cl-incf new-line))
+          (_ nil)))
+      (when cur-start
+        (push (cons cur-start (nreverse cur-lines)) groups))
+      (setq groups (nreverse groups))
+      (let ((selected
+             (cl-find-if
+              (lambda (g)
+                (let* ((g-start (car g))
+                       (g-lines (cdr g))
+                       (n-plus (cl-count-if
+                                (lambda (l) (string-prefix-p "+" l))
+                                g-lines)))
+                  (and (> n-plus 0)
+                       (<= g-start target-line)
+                       (<= target-line (1- (+ g-start n-plus))))))
+              groups)))
+        (if selected
+            (string-join (cons header (cdr selected)) "\n")
+          hunk-text)))))
+
 ;;;###autoload
 (defun diff-minimap-show-hunk ()
-  "Show the diff hunk at point in a preview window."
+  "Show the diff hunk at point as an inline overlay.
+Toggle: if the hunk overlay is already displayed, remove it.
+When point moves outside the hunk range, the overlay is removed."
   (interactive)
-  (unless (buffer-file-name)
-    (user-error "Buffer has no file"))
-  (let* ((line (line-number-at-pos))
-         (data (diff-minimap--collect-diff-data))
-         (hunk (cl-find-if (lambda (h) (<= (nth 1 h) line (nth 2 h))) data)))
-    (unless hunk
-      (user-error "No diff hunk at line %d" line))
-    (let* ((start (nth 1 hunk))
-           (file (buffer-file-name))
-           (rel-file (file-relative-name file))
-           (default-directory (file-name-directory file))
-           (full-patch (diff-minimap--git-diff
-                        (format "diff --no-color --unified=3 HEAD -- %s"
-                                (shell-quote-argument rel-file))))
-           (patch (and full-patch
-                       (diff-minimap--extract-hunk-from-patch full-patch start))))
-      (unless patch
-        (user-error "No diff output for hunk at line %d" start))
-      (let ((buf (get-buffer-create "*diff preview*")))
-        (with-current-buffer buf
-          (let ((inhibit-read-only t))
-            (erase-buffer)
-            (insert (concat patch "\n"))
+  (if (and diff-minimap--hunk-overlay
+           (overlay-buffer diff-minimap--hunk-overlay)
+           (eq (overlay-buffer diff-minimap--hunk-overlay) (current-buffer)))
+      (progn
+        (delete-overlay diff-minimap--hunk-overlay)
+        (setq diff-minimap--hunk-overlay nil))
+    (unless (buffer-file-name)
+      (user-error "Buffer has no file"))
+    (let* ((line (line-number-at-pos))
+           (data (diff-minimap--collect-diff-data))
+           (hunk (cl-find-if (lambda (h) (<= (nth 1 h) line (nth 2 h))) data)))
+      (unless hunk
+        (user-error "No diff hunk at line %d" line))
+      (let* ((start (nth 1 hunk))
+             (end (nth 2 hunk))
+             (file (buffer-file-name))
+             (rel-file (file-relative-name file))
+             (default-directory (file-name-directory file))
+             (full-patch (diff-minimap--git-diff
+                          (format "diff --no-color --unified=3 HEAD -- %s"
+                                  (shell-quote-argument rel-file))))
+             (patch (and full-patch
+                         (diff-minimap--extract-hunk-from-patch full-patch start)))
+             (narrowed (and patch
+                            (diff-minimap--extract-sub-hunk patch line))))
+        (unless patch
+          (user-error "No diff output for hunk at line %d" start))
+        (let ((fontified (with-temp-buffer
+                           (insert narrowed)
+                           (diff-mode)
+                           (font-lock-ensure)
+                           (concat (buffer-string) "\n"))))
+          (save-excursion
             (goto-char (point-min))
-            (diff-mode)
-            (setq buffer-read-only t)
-            (local-set-key (kbd "q") #'quit-window)))
-        (display-buffer buf `((display-buffer-reuse-window
-                                display-buffer-in-direction)
-                               (direction . ,diff-minimap-preview-side)
-                               (window-width . ,diff-minimap-preview-width)))))))
+            (forward-line (1- start))
+            (let ((ov (make-overlay (point)
+                                    (progn (forward-line (1+ (- end start)))
+                                           (point)))))
+              (overlay-put ov 'diff-minimap-hunk t)
+              (overlay-put ov 'before-string fontified)
+              (overlay-put ov 'face 'diff-minimap-hunk-region)
+              (overlay-put ov 'priority 100)
+              (setq diff-minimap--hunk-overlay ov))))))))
 
 ;;;###autoload
 (defun diff-minimap-toggle ()

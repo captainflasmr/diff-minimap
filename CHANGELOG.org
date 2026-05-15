@@ -10,6 +10,16 @@ This document contains the release notes for diff-minimap.
 
 * Versions
 
+** 0.6.0 — <2026-05-15>
+
+Inline overlay hunk preview with per-change narrowing.
+
+- Replace popup side-window in =diff-minimap-show-hunk= with an inline overlay that displays the fontified unified diff hunk as virtual text (via =before-string=) directly in the source buffer above the hunk region.  The hunk lines are highlighted with =diff-minimap-hunk-region= face.
+- Narrow the displayed diff to only the specific change group (contiguous =-= /=+= block) that contains point, ignoring unrelated changes and context lines in the same git hunk.  Pure removals (no =+= lines) fall back to the full hunk.
+- Toggle the preview on/off by calling =diff-minimap-show-hunk= again.
+- Auto-remove the overlay when point moves outside the hunk range.
+- Changes are backward-compatible to the caller: =C-c p=, =diff-minimap-mode-map= binding, and right-click on the minimap all work identically.
+
 ** 0.5.0 — <2026-05-14>
 
 Optional diff-hl, VC backend, built-in fringe indicators.
