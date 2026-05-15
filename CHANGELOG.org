@@ -20,6 +20,8 @@ Optional diff-hl, VC backend, built-in fringe indicators.
 - Fix =diff-minimap--cache-faces= crash when =diff-hl= faces are undefined (guard =face-attribute= calls with =facep=).
 - Add =diff-minimap-next-hunk= and =diff-minimap-previous-hunk= for navigating between diff hunks (pulses the full hunk range on arrival).  Bound to =C-x v ]= and =C-x v [= (vc-prefix-map) and =M-]= / =M-[= (minor-mode map).
 - Add =diff-minimap-search-highlights= (t / nil) — when enabled, isearch matches appear as yellow bars in the minimap, updated live on every keystroke.
+- Add =diff-minimap-show-hunk= command to preview the diff hunk at point in a popup window (=C-c p= in the source buffer, =mouse-3= on the minimap).
+- When =diff-minimap-mode= is active, ~vc-diff~ (=C-x v =) automatically positions point at the hunk corresponding to the source line.
 - Fix =diff-minimap--parse-git-diff= merge-ranges bug with adjacent hunks of the same type (input order was reversed before merging).
 
 ** 0.4.0 — <2026-05-10>

@@ -119,6 +119,17 @@ Disabled when nil."
   :type 'boolean
   :group 'diff-minimap)
 
+(defcustom diff-minimap-preview-width 50
+  "Width in columns of the inline diff preview window."
+  :type 'integer
+  :group 'diff-minimap)
+
+(defcustom diff-minimap-preview-side 'right
+  "Which side to display the inline diff preview window."
+  :type '(choice (const :tag "Left" left)
+                 (const :tag "Right" right))
+  :group 'diff-minimap)
+
 (defcustom diff-minimap-colour-source 'diff-hl
   "Which face colours to use for diff highlights in the minimap.
 `diff-hl' — prefer =diff-hl-insert/change/deleted= fringe faces (fallback
@@ -778,6 +789,78 @@ Clears the minimap when entering a buffer with no diff backend."
         (forward-line (1- line))
         (recenter 0)))))
 
+(defun diff-minimap--click-show-hunk ()
+  "Handle right-click: jump to source and preview the diff hunk."
+  (interactive)
+  (let* ((pos (event-start last-input-event))
+         (line (get-text-property (posn-point pos) 'source-line))
+         (buf (get-text-property (posn-point pos) 'source-buf)))
+    (when (and line buf (buffer-live-p buf))
+      (with-selected-window (get-buffer-window buf)
+        (goto-char (point-min))
+        (forward-line (1- line))
+        (recenter 0)
+        (diff-minimap-show-hunk)))))
+
+(defun diff-minimap--extract-hunk-from-patch (patch target-line)
+  "Extract from unified diff PATCH the hunk covering TARGET-LINE.
+Returns the hunk text as a string, or nil if not found."
+  (catch 'done
+    (let ((lines (split-string patch "\n"))
+          (result nil)
+          (new-line nil)
+          (hunk-start nil))
+      (dolist (line lines)
+        (cond
+         ((string-match "^@@ -\\([0-9]+\\),?\\([0-9]*\\) \\+\\([0-9]+\\),?\\([0-9]*\\) @@" line)
+          (when (and hunk-start (<= hunk-start target-line (1- new-line)))
+            (throw 'done (string-join (nreverse result) "\n")))
+          (setq hunk-start (string-to-number (match-string 3 line))
+                new-line hunk-start
+                result (list line)))
+         (new-line
+          (push line result)
+          (when (string-match "^\\([+ ]\\)" line)
+            (cl-incf new-line)))))
+      (when (and hunk-start (<= hunk-start target-line (1- new-line)))
+        (string-join (nreverse result) "\n")))))
+
+;;;###autoload
+(defun diff-minimap-show-hunk ()
+  "Show the diff hunk at point in a preview window."
+  (interactive)
+  (unless (buffer-file-name)
+    (user-error "Buffer has no file"))
+  (let* ((line (line-number-at-pos))
+         (data (diff-minimap--collect-diff-data))
+         (hunk (cl-find-if (lambda (h) (<= (nth 1 h) line (nth 2 h))) data)))
+    (unless hunk
+      (user-error "No diff hunk at line %d" line))
+    (let* ((start (nth 1 hunk))
+           (file (buffer-file-name))
+           (rel-file (file-relative-name file))
+           (default-directory (file-name-directory file))
+           (full-patch (diff-minimap--git-diff
+                        (format "diff --no-color --unified=3 HEAD -- %s"
+                                (shell-quote-argument rel-file))))
+           (patch (and full-patch
+                       (diff-minimap--extract-hunk-from-patch full-patch start))))
+      (unless patch
+        (user-error "No diff output for hunk at line %d" start))
+      (let ((buf (get-buffer-create "*diff preview*")))
+        (with-current-buffer buf
+          (let ((inhibit-read-only t))
+            (erase-buffer)
+            (insert (concat patch "\n"))
+            (goto-char (point-min))
+            (diff-mode)
+            (setq buffer-read-only t)
+            (local-set-key (kbd "q") #'quit-window)))
+        (display-buffer buf `((display-buffer-reuse-window
+                                display-buffer-in-direction)
+                               (direction . ,diff-minimap-preview-side)
+                               (window-width . ,diff-minimap-preview-width)))))))
+
 ;;;###autoload
 (defun diff-minimap-toggle ()
   "Toggle the diff minimap side window."
@@ -808,6 +891,7 @@ Clears the minimap when entering a buffer with no diff backend."
           (let ((map (make-sparse-keymap)))
             (define-key map [mouse-1] #'diff-minimap--click-handler)
             (define-key map [down-mouse-1] #'ignore)
+            (define-key map [mouse-3] #'diff-minimap--click-show-hunk)
             (use-local-map map))
           (setq-local mode-line-format nil)
           (setq-local header-line-format nil))
@@ -927,10 +1011,58 @@ Uses the configured `diff-minimap-diff-backend' to find hunks."
           (diff-minimap--pulse-range start end))
       (user-error "No previous hunk"))))
 
+
+;;; VC diff navigation
+
+(defvar diff-minimap--vc-diff-context nil
+  "Cons (BUFFER . LINE) saved before `vc-diff' for hunk navigation.")
+
+(defun diff-minimap--before-vc-diff (&rest _)
+  "Save current buffer and line before `vc-diff'."
+  (setq diff-minimap--vc-diff-context
+        (cons (current-buffer) (line-number-at-pos))))
+
+(defun diff-minimap--after-vc-diff (&rest _)
+  "After `vc-diff', jump to the hunk line matching the saved source line."
+  (when-let ((context diff-minimap--vc-diff-context)
+             (buf (car context))
+             (line (cdr context))
+             (diff-buf (get-buffer "*vc-diff*")))
+    (setq diff-minimap--vc-diff-context nil)
+    (with-current-buffer diff-buf
+      (goto-char (point-min))
+      (let ((hdr-pos nil) (new-start nil))
+        (while (re-search-forward "^@@ -\\([0-9]+\\),?\\([0-9]*\\) \\+\\([0-9]+\\),?\\([0-9]*\\) @@" nil t)
+          (let* ((ns (string-to-number (match-string 3)))
+                 (nc (let ((c (match-string 4)))
+                       (if (string-empty-p c) 1 (string-to-number c)))))
+            (when (<= ns line (1- (+ ns nc)))
+              (setq hdr-pos (match-beginning 0)
+                    new-start ns))))
+        (if (not hdr-pos)
+            (goto-char (point-min))
+          (goto-char hdr-pos)
+          (forward-line 1)
+          (catch 'found
+            (while (< (point) (point-max))
+              (cond
+               ((looking-at "-")
+                (forward-line 1))
+               ((looking-at "[ +]")
+                (when (= new-start line)
+                  (throw 'found (recenter 0)))
+                (cl-incf new-start)
+                (forward-line 1))
+               (t (forward-line 1)))
+              (when (looking-at "^@@")
+                (throw 'found nil))))
+          (recenter 0))))))
+
 (defvar diff-minimap-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "M-]") #'diff-minimap-next-hunk)
     (define-key map (kbd "M-[") #'diff-minimap-previous-hunk)
+    (define-key map (kbd "C-c p") #'diff-minimap-show-hunk)
     map)
   "Keymap for `diff-minimap-mode'.
 Bound keys:
@@ -951,11 +1083,15 @@ toggle per buffer.
         (add-hook 'post-command-hook #'diff-minimap--post-command)
         (add-hook 'after-save-hook #'diff-minimap--after-save)
         (add-hook 'isearch-update-post-hook #'diff-minimap--search-update)
-        (add-hook 'isearch-mode-end-hook #'diff-minimap--search-clear))
+        (add-hook 'isearch-mode-end-hook #'diff-minimap--search-clear)
+        (advice-add 'vc-diff :before #'diff-minimap--before-vc-diff)
+        (advice-add 'vc-diff :after #'diff-minimap--after-vc-diff))
     (remove-hook 'post-command-hook #'diff-minimap--post-command)
     (remove-hook 'after-save-hook #'diff-minimap--after-save)
     (remove-hook 'isearch-update-post-hook #'diff-minimap--search-update)
     (remove-hook 'isearch-mode-end-hook #'diff-minimap--search-clear)
+    (advice-remove 'vc-diff #'diff-minimap--before-vc-diff)
+    (advice-remove 'vc-diff #'diff-minimap--after-vc-diff)
     (setq diff-minimap--last-buffer nil)))
 
 (define-key vc-prefix-map (kbd "m") #'diff-minimap-toggle)
