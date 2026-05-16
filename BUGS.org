@@ -9,6 +9,8 @@ This document contains the current bugs/improvements, this is just for me mainly
 
 * Bugs/Improvements
 
+** TODO toggle all diffs on and off inline peek
+
 ** DOING usage in ediff
 
 ** DOING side-bar to work without diff-hl?
