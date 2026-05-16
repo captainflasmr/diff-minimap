@@ -92,12 +92,14 @@ is a string of XBM bitmap bytes (left-to-right, top-to-bottom)."
 
 (defcustom diff-minimap-diff-backend 'auto
   "Which backend to use for collecting diff data.
-`auto' — try `diff-hl' first, fall back to git.
+`auto' — try Ediff first, then `diff-hl', fall back to git.
 `diff-hl' — use diff-hl overlays (requires `diff-hl-mode').
-`vc'    — use VC system (currently git only)."
-  :type '(choice (const :tag "Auto-detect (diff-hl > git)" auto)
+`vc'    — use VC system (currently git only).
+`ediff' — use Ediff session diff overlays."
+  :type '(choice (const :tag "Auto-detect (ediff > diff-hl > git)" auto)
                  (const :tag "diff-hl overlays" diff-hl)
-                 (const :tag "VC (git)" vc))
+                 (const :tag "VC (git)" vc)
+                 (const :tag "Ediff session" ediff))
   :group 'diff-minimap)
 
 (defcustom diff-minimap-fringe-indicators t
@@ -300,7 +302,9 @@ Respects `diff-minimap-colour-source' for diff highlight priority."
   (pcase diff-minimap-diff-backend
     ('diff-hl (bound-and-true-p diff-hl-mode))
     ('vc (and (buffer-file-name) (executable-find "git")))
-    ('auto (or (bound-and-true-p diff-hl-mode)
+    ('ediff (diff-minimap--ediff-active-p))
+    ('auto (or (diff-minimap--ediff-active-p)
+               (bound-and-true-p diff-hl-mode)
                (and (buffer-file-name) (executable-find "git"))))))
 
 (defun diff-minimap--collect-diff-data ()
@@ -312,7 +316,9 @@ Returns nil when no backend is available or no changes exist."
   (pcase diff-minimap-diff-backend
     ('diff-hl (diff-minimap--collect-from-diff-hl))
     ('vc (diff-minimap--collect-from-vc))
-    ('auto (or (diff-minimap--collect-from-diff-hl)
+    ('ediff (diff-minimap--collect-from-ediff))
+    ('auto (or (diff-minimap--collect-from-ediff)
+               (diff-minimap--collect-from-diff-hl)
                (diff-minimap--collect-from-vc)))))
 
 (defun diff-minimap--collect-from-diff-hl ()
@@ -425,6 +431,32 @@ HUNK-NEW-START is the starting new-line number."
     (when (and has-minus (not has-plus))
       (push (list 'removed hunk-new-start hunk-new-start) result))
     (nreverse result)))
+
+(defun diff-minimap--ediff-active-p ()
+  "Return t if the current buffer is part of an active Ediff session.
+Checks for overlays placed by Ediff on diff regions."
+  (catch 'found
+    (dolist (ov (overlays-in (point-min) (point-max)))
+      (when (overlay-get ov 'ediff-diff-number)
+        (throw 'found t)))))
+
+(defun diff-minimap--collect-from-ediff ()
+  "Collect diff data from Ediff overlays in the current buffer.
+Returns a list of (TYPE START-LINE END-LINE) where TYPE is always
+`changed', or nil if no Ediff session is active."
+  (let ((result nil))
+    (dolist (ov (overlays-in (point-min) (point-max)))
+      (when (overlay-get ov 'ediff-diff-number)
+        (let* ((st (overlay-start ov))
+               (en (overlay-end ov)))
+          (when (and st en (> en st))
+            (save-excursion
+              (let ((sl (progn (goto-char st) (line-number-at-pos)))
+                    (el (progn (goto-char en)
+                               (if (bolp) (1- (line-number-at-pos))
+                                 (line-number-at-pos)))))
+                (push (list 'changed sl el) result)))))))
+    (diff-minimap--merge-ranges (nreverse result))))
 
 (defun diff-minimap--merge-ranges (changes)
   "Merge adjacent ranges of the same type in CHANGES."
@@ -1000,6 +1032,40 @@ When `demap' is absent, behaves as `diff-minimap-toggle'."
         (diff-minimap-toggle)
         (demap-open)))))
 
+;;;###autoload
+(defun diff-minimap-ediff-setup ()
+  "Open the diff minimap during an Ediff session.
+Add this function to `ediff-startup-hook' to automatically show the
+minimap when starting Ediff:
+
+  (add-hook \\='ediff-startup-hook #\\='diff-minimap-ediff-setup)
+
+When the minimap is already open this is a no-op."
+  (interactive)
+  (when (and (eq major-mode 'ediff-mode)
+             (not (get-buffer-window diff-minimap--buffer-name)))
+    (diff-minimap-mode 1)
+    (let* ((a-buf (and (boundp 'ediff-buffer-A)
+                       (buffer-live-p ediff-buffer-A)
+                       ediff-buffer-A))
+           (b-buf (and (boundp 'ediff-buffer-B)
+                       (buffer-live-p ediff-buffer-B)
+                       ediff-buffer-B))
+           (c-buf (and (boundp 'ediff-buffer-C)
+                       (buffer-live-p ediff-buffer-C)
+                       ediff-buffer-C)))
+      ;; Defer window creation to avoid interfering with ediff's own
+      ;; window-layout setup during ediff-startup-hook.
+      (run-with-idle-timer 0 nil
+        (lambda ()
+          (when (and (not (get-buffer-window diff-minimap--buffer-name))
+                     (or (and a-buf (buffer-live-p a-buf))
+                         (and b-buf (buffer-live-p b-buf))))
+            (with-current-buffer (or (and a-buf (buffer-live-p a-buf) a-buf)
+                                     (and b-buf (buffer-live-p b-buf) b-buf)
+                                     c-buf)
+              (diff-minimap-toggle))))))))
+
 (defun diff-minimap--pulse-range (start end)
   "Momentarily highlight lines from START to END (1-indexed, inclusive)."
   (ignore-errors
@@ -1166,19 +1232,51 @@ toggle per buffer.
         (add-hook 'isearch-update-post-hook #'diff-minimap--search-update)
         (add-hook 'isearch-mode-end-hook #'diff-minimap--search-clear)
         (advice-add 'vc-diff :before #'diff-minimap--before-vc-diff)
-        (advice-add 'vc-diff :after #'diff-minimap--after-vc-diff))
+        (advice-add 'vc-diff :after #'diff-minimap--after-vc-diff)
+        (if (fboundp 'ediff-setup)
+            (diff-minimap--ensure-ediff-advice)
+          (with-eval-after-load 'ediff
+            (diff-minimap--ensure-ediff-advice))))
     (remove-hook 'post-command-hook #'diff-minimap--post-command)
     (remove-hook 'after-save-hook #'diff-minimap--after-save)
     (remove-hook 'isearch-update-post-hook #'diff-minimap--search-update)
     (remove-hook 'isearch-mode-end-hook #'diff-minimap--search-clear)
     (advice-remove 'vc-diff #'diff-minimap--before-vc-diff)
     (advice-remove 'vc-diff #'diff-minimap--after-vc-diff)
+    (diff-minimap--remove-ediff-advice)
     (setq diff-minimap--last-buffer nil)))
 
 (define-key vc-prefix-map (kbd "m") #'diff-minimap-toggle)
 (define-key vc-prefix-map (kbd "M") #'diff-minimap-toggle-with-demap)
 (define-key vc-prefix-map "]" #'diff-minimap-next-hunk)
 (define-key vc-prefix-map "[" #'diff-minimap-previous-hunk)
+
+
+;;; Ediff integration
+
+(defvar diff-minimap--ediff-advised nil
+  "Whether `ediff-setup' has been advised to close the minimap.")
+
+(defun diff-minimap--before-ediff-setup (&rest _)
+  "Close the minimap before ediff creates its window layout.
+Side windows cannot be split by ediff, so the minimap must be
+closed first.  It will be re-opened by `ediff-startup-hook' via
+`diff-minimap-ediff-setup'."
+  (when-let ((mm-buf (get-buffer diff-minimap--buffer-name))
+             (win (get-buffer-window mm-buf)))
+    (diff-minimap-toggle)))
+
+(defun diff-minimap--ensure-ediff-advice ()
+  "Install `:before' advice on `ediff-setup' if not already done."
+  (unless diff-minimap--ediff-advised
+    (advice-add 'ediff-setup :before #'diff-minimap--before-ediff-setup)
+    (setq diff-minimap--ediff-advised t)))
+
+(defun diff-minimap--remove-ediff-advice ()
+  "Remove the `:before' advice on `ediff-setup'."
+  (when diff-minimap--ediff-advised
+    (advice-remove 'ediff-setup #'diff-minimap--before-ediff-setup)
+    (setq diff-minimap--ediff-advised nil)))
 
 (provide 'diff-minimap)
 ;;; diff-minimap.el ends here
