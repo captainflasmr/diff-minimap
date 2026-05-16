@@ -3,22 +3,23 @@
 #+email: captainflasmr@gmail.com
 #+language: en
 #+options: ':t toc:nil author:nil email:nil num:nil title:nil
-#+todo: TODO DOING | DONE
 #+startup: showall
 
 This document contains the current bugs/improvements, this is just for me mainly but does include any Issues reported.
 
 * Bugs/Improvements
 
-** TODO git versions, jump through older with commit message in header line
-
-** TODO usage in ediff
+** DOING usage in ediff
 
 ** DOING side-bar to work without diff-hl?
 
-** TODO mouse scrolling in viewport
+** DOING complement demap
 
-** TODO complement demap
+** DOING for diff peek don't show current just the diffs
+
+** TODO git versions, jump through older with commit message in header line
+
+** TODO mouse scrolling in viewport
 
 ** TODO add automated unit tests
 
