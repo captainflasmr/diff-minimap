@@ -1479,8 +1479,20 @@ toggle per buffer.
 
 (define-key vc-prefix-map (kbd "m") #'diff-minimap-toggle)
 (define-key vc-prefix-map (kbd "M") #'diff-minimap-toggle-with-demap)
-(define-key vc-prefix-map "]" #'diff-minimap-next-hunk)
-(define-key vc-prefix-map "[" #'diff-minimap-previous-hunk)
+(define-key vc-prefix-map (kbd "]") #'diff-minimap-next-hunk)
+(define-key vc-prefix-map (kbd "[") #'diff-minimap-previous-hunk)
+
+(defvar diff-minimap-hunk-repeat-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "]") #'diff-minimap-next-hunk)
+    (define-key map (kbd "[") #'diff-minimap-previous-hunk)
+    map)
+  "Repeat map for `diff-minimap-next-hunk' and `diff-minimap-previous-hunk'.
+When `repeat-mode' is enabled, after `C-x v ]' or `C-x v [', pressing
+`]' or `[' again repeats the hunk navigation without the prefix." )
+
+(dolist (cmd '(diff-minimap-next-hunk diff-minimap-previous-hunk))
+  (put cmd 'repeat-map 'diff-minimap-hunk-repeat-map))
 
 
 ;;; Ediff integration
