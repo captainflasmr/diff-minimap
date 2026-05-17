@@ -10,6 +10,15 @@ This document contains the release notes for diff-minimap.
 
 * Versions
 
+** 0.7.1 — <2026-05-17>
+
+Refined hunk preview and toggle-all previews command.
+
+- Add =diff-minimap-show-all-hunks= (bound to =C-c P=) to toggle all diff previews in the current buffer at once.
+- Refine =diff-minimap-show-hunk= to strictly exclude context lines (using =--unified=0=) and replace original buffer text visually (using the =display= property).
+- Make hunk previews persistent: previews (both individual and batch) now remain visible until manually toggled off, providing a stable view during edits.
+- Improve sub-hunk extraction to correctly track line numbers for pure deletion blocks, ensuring the preview appears when point is on the line of deletion.
+
 ** 0.7.0 — <2026-05-17>
 
 Dual-column Ediff minimap and granular overlay scanning.
