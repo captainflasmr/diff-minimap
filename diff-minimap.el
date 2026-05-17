@@ -167,7 +167,11 @@ Disabled when nil."
   :group 'diff-minimap)
 
 (defface diff-minimap-hunk-region
-  '((t :inherit highlight :extend t))
+  '((((class color) (min-colors 88) (background light))
+     :background "#f4f4f4" :extend t)
+    (((class color) (min-colors 88) (background dark))
+     :background "#222222" :extend t)
+    (t :inherit diff-hunk-header :extend t))
   "Face for the highlighted hunk region when showing inline preview."
   :group 'diff-minimap)
 
@@ -1127,9 +1131,10 @@ HUNK is a list (TYPE START END)."
     (when narrowed
       (let ((fontified (with-temp-buffer
                          (insert narrowed)
+                         (unless (bolp) (insert "\n"))
                          (diff-mode)
                          (font-lock-ensure)
-                         (concat (buffer-string) "\n"))))
+                         (buffer-string))))
         (save-excursion
           (goto-char (point-min))
           (forward-line (1- start))
