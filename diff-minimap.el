@@ -1,7 +1,7 @@
 ;;; diff-minimap.el --- VSCode-style minimap showing diff regions -*- lexical-binding: t; -*-
 ;;
 ;; Author: James Dyer <captainflasmr@gmail.com>
-;; Version: 0.6.0
+;; Version: 0.7.0
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: vc, tools, convenience
 ;; URL: https://github.com/captainflasmr/diff-minimap
@@ -299,13 +299,15 @@ Respects `diff-minimap-colour-source' for diff highlight priority."
 
 (defun diff-minimap--backend-available-p ()
   "Return t if the configured diff backend is available."
-  (pcase diff-minimap-diff-backend
-    ('diff-hl (bound-and-true-p diff-hl-mode))
-    ('vc (and (buffer-file-name) (executable-find "git")))
-    ('ediff (diff-minimap--ediff-active-p))
-    ('auto (or (diff-minimap--ediff-active-p)
-               (bound-and-true-p diff-hl-mode)
-               (and (buffer-file-name) (executable-find "git"))))))
+  (if (and diff-minimap--ediff-control-buffer (buffer-live-p diff-minimap--ediff-control-buffer))
+      t
+    (pcase diff-minimap-diff-backend
+      ('diff-hl (bound-and-true-p diff-hl-mode))
+      ('vc (and (buffer-file-name) (executable-find "git")))
+      ('ediff (diff-minimap--ediff-active-p))
+      ('auto (or (diff-minimap--ediff-active-p)
+                 (bound-and-true-p diff-hl-mode)
+                 (and (buffer-file-name) (executable-find "git")))))))
 
 (defun diff-minimap--collect-diff-data ()
   "Collect diff data from the configured backend.
@@ -437,26 +439,30 @@ HUNK-NEW-START is the starting new-line number."
 Checks for overlays placed by Ediff on diff regions."
   (catch 'found
     (dolist (ov (overlays-in (point-min) (point-max)))
-      (when (overlay-get ov 'ediff-diff-number)
+      (when (overlay-get ov 'ediff-diff-num)
         (throw 'found t)))))
 
-(defun diff-minimap--collect-from-ediff ()
-  "Collect diff data from Ediff overlays in the current buffer.
+(defun diff-minimap--collect-from-ediff (&optional buf)
+  "Collect diff data from Ediff overlays in BUF (or current buffer).
 Returns a list of (TYPE START-LINE END-LINE) where TYPE is always
 `changed', or nil if no Ediff session is active."
-  (let ((result nil))
-    (dolist (ov (overlays-in (point-min) (point-max)))
-      (when (overlay-get ov 'ediff-diff-number)
-        (let* ((st (overlay-start ov))
-               (en (overlay-end ov)))
-          (when (and st en (> en st))
-            (save-excursion
-              (let ((sl (progn (goto-char st) (line-number-at-pos)))
-                    (el (progn (goto-char en)
-                               (if (bolp) (1- (line-number-at-pos))
-                                 (line-number-at-pos)))))
-                (push (list 'changed sl el) result)))))))
-    (diff-minimap--merge-ranges (nreverse result))))
+  (with-current-buffer (or buf (current-buffer))
+    (let ((result nil))
+      (dolist (ov (overlays-in (point-min) (point-max)))
+        (when (overlay-get ov 'ediff-diff-num)
+          (let* ((st (overlay-start ov))
+                 (en (overlay-end ov)))
+            (when (and st en (> en st))
+              (save-excursion
+                (let ((sl (progn (goto-char st) (line-number-at-pos)))
+                      (el (progn (goto-char en)
+                                 (if (bolp) (1- (line-number-at-pos))
+                                   (line-number-at-pos)))))
+                  (push (list 'changed sl el) result)))))))
+      (diff-minimap--merge-ranges (nreverse result)))))
+
+(defvar diff-minimap--ediff-control-buffer nil
+  "The active Ediff control buffer if rendering a dual-column minimap.")
 
 (defun diff-minimap--merge-ranges (changes)
   "Merge adjacent ranges of the same type in CHANGES."
@@ -539,20 +545,33 @@ DIFF-DATA is a list of (TYPE START END) as returned by
 (defun diff-minimap--update-viewport ()
   "Update viewport and cursor overlays in the minimap buffer.
 Called on every command — cheap overlay moves, not a full rebuild."
-  (let ((mm-buf (get-buffer diff-minimap--buffer-name))
-        (this-buf (current-buffer)))
-    (when (and mm-buf (get-buffer-window mm-buf))
+  (let* ((mm-buf (get-buffer diff-minimap--buffer-name))
+         (this-buf (current-buffer))
+         (ediff-active (and diff-minimap--ediff-control-buffer
+                            (buffer-live-p diff-minimap--ediff-control-buffer)))
+         (a-buf (and ediff-active (with-current-buffer diff-minimap--ediff-control-buffer (bound-and-true-p ediff-buffer-A))))
+         (b-buf (and ediff-active (with-current-buffer diff-minimap--ediff-control-buffer (bound-and-true-p ediff-buffer-B))))
+         (dual-col (and a-buf (buffer-live-p a-buf) b-buf (buffer-live-p b-buf))))
+    (when (and mm-buf (get-buffer-window mm-buf 0))
       (with-current-buffer this-buf
-         (let* ((total (diff-minimap--buffer-lines))
+         (let* ((total (if dual-col
+                           (nth 0 (with-current-buffer diff-minimap--ediff-control-buffer (diff-minimap--collect-ediff-dual)))
+                         (diff-minimap--buffer-lines)))
                 (nrows (or diff-minimap--last-nrows 1))
-               (scale (/ (float total) nrows))
-                (ws-win (get-buffer-window this-buf))
-                (pt-line (line-number-at-pos))
+                (scale (/ (float total) nrows))
+                (ws-win (if dual-col (get-buffer-window a-buf 0) (get-buffer-window this-buf 0)))
+                (pt-line (if dual-col
+                             (diff-minimap--physical-to-virtual-A (with-current-buffer a-buf (line-number-at-pos)) diff-minimap--ediff-control-buffer)
+                           (line-number-at-pos)))
                 (cur-row (min (1- nrows)
                               (floor (/ (1- pt-line) scale))))
-                (vis-rows (max 1 (ceiling (window-text-height ws-win) scale)))
-                (ws-row (let ((from-start (max 0 (floor (/ (1- (line-number-at-pos
-                                                                (window-start ws-win)))
+                (vis-rows (max 1 (ceiling (window-text-height (or ws-win (selected-window))) scale)))
+                (ws-row (let ((from-start (max 0 (floor (/ (1- (if dual-col
+                                                                   (diff-minimap--physical-to-virtual-A
+                                                                    (with-current-buffer a-buf
+                                                                      (line-number-at-pos (window-start ws-win)))
+                                                                    diff-minimap--ediff-control-buffer)
+                                                                 (line-number-at-pos (window-start ws-win))))
                                                           scale)))))
                           ;; When window-start is stale (e.g. after
                           ;; beginning-of-buffer during post-command-hook)
@@ -680,49 +699,206 @@ Called on every command — cheap overlay moves, not a full rebuild."
                             `(:background ,diff-minimap--cur-bg))
                (overlay-put diff-minimap--cursor-overlay 'priority 10))))))))
 
+(defun diff-minimap--physical-to-virtual-A (phys-A ediff-ctrl)
+  "Convert physical line in Buffer A to a virtual aligned line for the dual minimap."
+  (let ((v-line phys-A))
+    (with-current-buffer ediff-ctrl
+      (if (and (boundp 'ediff-number-of-differences) (numberp ediff-number-of-differences))
+          (dotimes (i ediff-number-of-differences)
+            (let ((ov-A (ediff-get-diff-overlay i 'A))
+                  (ov-B (ediff-get-diff-overlay i 'B)))
+              (when (and ov-A ov-B)
+                (let* ((st-A (overlay-start ov-A)) (en-A (overlay-end ov-A))
+                       (st-B (overlay-start ov-B)) (en-B (overlay-end ov-B))
+                       (buf-A (overlay-buffer ov-A)) (buf-B (overlay-buffer ov-B)))
+                  (when (and st-A en-A st-B en-B buf-A buf-B)
+                    (let* ((sl-A (with-current-buffer buf-A (line-number-at-pos st-A)))
+                           (el-A (with-current-buffer buf-A (if (= st-A en-A) sl-A (line-number-at-pos (max st-A (1- en-A))))))
+                           (sl-B (with-current-buffer buf-B (line-number-at-pos st-B)))
+                           (el-B (with-current-buffer buf-B (if (= st-B en-B) sl-B (line-number-at-pos (max st-B (1- en-B))))))
+                           (len-A (if (= st-A en-A) 0 (1+ (- el-A sl-A))))
+                           (len-B (if (= st-B en-B) 0 (1+ (- el-B sl-B)))))
+                      (when (< sl-A phys-A)
+                        (let ((diff-gap (- len-B len-A)))
+                          (when (> diff-gap 0)
+                            (cl-incf v-line diff-gap))))))))))))
+    v-line))
+
+(defun diff-minimap--get-line-face (buf line)
+  "Get the most relevant Ediff face for physical LINE in BUF."
+  (when (and buf (buffer-live-p buf) line)
+    (with-current-buffer buf
+      (save-excursion
+        (goto-char (point-min))
+        (when (zerop (forward-line (1- line)))
+          (let* ((beg (line-beginning-position))
+                 (end (line-end-position))
+                 ;; Scan slightly past the end to catch overlays that end at bol of next line
+                 (ovs (overlays-in beg (min (point-max) (1+ end))))
+                 (best-face nil))
+            (dolist (ov ovs)
+              (let ((f (overlay-get ov 'face)))
+                (when (symbolp f)
+                  (let ((name (symbol-name f)))
+                    (cond
+                     ;; Highest priority: fine diffs
+                     ((string-match-p "fine-diff" name) (setq best-face f))
+                     ;; Second priority: current diff
+                     ((and (not (and best-face (string-match-p "fine-diff" (symbol-name best-face))))
+                           (string-match-p "current-diff" name))
+                      (setq best-face f))
+                     ;; Fallback: any other ediff face
+                     ((and (not best-face) (string-match-p "ediff-" name))
+                      (setq best-face f)))))))
+            best-face))))))
+
+(defun diff-minimap--collect-ediff-dual ()
+  "Collect diff-A and diff-B directly from Ediff control buffer.
+Returns a list (TOTAL-VIRT DIFF-A DIFF-B).
+Each entry in DIFF-A/DIFF-B is (FACE-OR-TYPE VIRT-START VIRT-END)."
+  (let ((diff-A nil) (diff-B nil)
+        (v-line 1) (a-line 1) (b-line 1)
+        (buf-A (bound-and-true-p ediff-buffer-A))
+        (buf-B (bound-and-true-p ediff-buffer-B)))
+    (when (and (boundp 'ediff-number-of-differences)
+               (numberp ediff-number-of-differences))
+      (dotimes (i ediff-number-of-differences)
+        (let* ((ov-A (ediff-get-diff-overlay i 'A))
+               (ov-B (ediff-get-diff-overlay i 'B))
+               (st-A (and ov-A (overlay-start ov-A)))
+               (en-A (and ov-A (overlay-end ov-A)))
+               (st-B (and ov-B (overlay-start ov-B)))
+               (en-B (and ov-B (overlay-end ov-B)))
+               (sl-A (and st-A buf-A (with-current-buffer buf-A (line-number-at-pos st-A))))
+               (el-A (and en-A buf-A (with-current-buffer buf-A (line-number-at-pos (max (or st-A 1) (1- en-A))))))
+               (sl-B (and st-B buf-B (with-current-buffer buf-B (line-number-at-pos st-B))))
+               (el-B (and en-B buf-B (with-current-buffer buf-B (line-number-at-pos (max (or st-B 1) (1- en-B))))))
+               (len-A (if (and st-A en-A (> en-A st-A) sl-A el-A) (1+ (- el-A sl-A)) 0))
+               (len-B (if (and st-B en-B (> en-B st-B) sl-B el-B) (1+ (- el-B sl-B)) 0))
+               (virt-lines (max 1 (max len-A len-B))))
+          ;; Advance v-line past any unchanged lines since the last diff
+          (when (and sl-A (> sl-A a-line))
+            (cl-incf v-line (- sl-A a-line)))
+          ;; Scan each virtual line in this hunk
+          (dotimes (kv virt-lines)
+            (let* ((curr-v (+ v-line kv))
+                   (fA (when (< kv len-A) (diff-minimap--get-line-face buf-A (+ sl-A kv))))
+                   (fB (when (< kv len-B) (diff-minimap--get-line-face buf-B (+ sl-B kv)))))
+              ;; Fallback if no specific face found on the line (e.g. hunk gap filling)
+              (unless fA
+                (setq fA (cond ((= len-A 0) 'ediff-current-diff-Ancestor)
+                               (t 'ediff-current-diff-A))))
+              (unless fB
+                (setq fB (cond ((= len-B 0) 'ediff-current-diff-Ancestor)
+                               (t 'ediff-current-diff-B))))
+              ;; Group into ranges
+              (if (and diff-A (eq (caar diff-A) fA) (= (nth 2 (car diff-A)) (1- curr-v)))
+                  (setf (nth 2 (car diff-A)) curr-v)
+                (push (list fA curr-v curr-v) diff-A))
+              (if (and diff-B (eq (caar diff-B) fB) (= (nth 2 (car diff-B)) (1- curr-v)))
+                  (setf (nth 2 (car diff-B)) curr-v)
+                (push (list fB curr-v curr-v) diff-B))))
+          (cl-incf v-line virt-lines)
+          (when sl-A (setq a-line (if (> len-A 0) (1+ el-A) sl-A)))
+          (when sl-B (setq b-line (if (> len-B 0) (1+ el-B) sl-B))))))
+    (let* ((buf-a (and (boundp 'ediff-buffer-A) ediff-buffer-A))
+           (rem-A (if buf-a
+                      (max 0 (- (with-current-buffer buf-a
+                                  (line-number-at-pos (point-max)))
+                                a-line))
+                    0))
+           (tot-virt (+ v-line rem-A)))
+      (list tot-virt (nreverse diff-A) (nreverse diff-B)))))
+
+
 (defun diff-minimap--render ()
   "Render the full minimap content with diff colours only.
 Viewport and cursor highlights are applied as overlays by
 `diff-minimap--update-viewport'."
   (diff-minimap--cache-faces)
-  (let ((mm-buf (get-buffer-create diff-minimap--buffer-name))
-        (this-buf (current-buffer)))
+  (let* ((mm-buf (get-buffer-create diff-minimap--buffer-name))
+         (ediff-active (and diff-minimap--ediff-control-buffer
+                            (buffer-live-p diff-minimap--ediff-control-buffer)))
+         ;; During Ediff, always use buffer-A as the reference buffer
+         (this-buf (if ediff-active
+                      (with-current-buffer diff-minimap--ediff-control-buffer
+                        (or (bound-and-true-p ediff-buffer-A) (current-buffer)))
+                    (current-buffer))))
     (when (and (diff-minimap--backend-available-p)
-               (get-buffer-window mm-buf))
-      (let* ((total (with-current-buffer this-buf
-                       (diff-minimap--buffer-lines)))
-             (src-win (get-buffer-window this-buf))
-             (mm-win (get-buffer-window mm-buf))
-               (nrows (max 1
-                           (let ((row-px (ceiling (* (frame-char-height)
-                                                     diff-minimap-font-scale))))
-                             (floor (/ (window-body-height
-                                        (or mm-win src-win) t)
-                                       row-px)))))
+               (get-buffer-window mm-buf 0))
+      (let* ((a-buf (and ediff-active (with-current-buffer diff-minimap--ediff-control-buffer (bound-and-true-p ediff-buffer-A))))
+             (b-buf (and ediff-active (with-current-buffer diff-minimap--ediff-control-buffer (bound-and-true-p ediff-buffer-B))))
+             (dual-col (and a-buf (buffer-live-p a-buf) b-buf (buffer-live-p b-buf)))
+             ;; NEVER fall back to VC/git when Ediff is active
+             (diff-data (unless (or dual-col ediff-active)
+                          (with-current-buffer this-buf
+                            (diff-minimap--collect-diff-data))))
+             (ediff-dual (when dual-col
+                           (with-current-buffer diff-minimap--ediff-control-buffer
+                             (diff-minimap--collect-ediff-dual))))
+             (total (if dual-col
+                        (nth 0 ediff-dual)
+                      (with-current-buffer this-buf (diff-minimap--buffer-lines))))
+             (diff-A (when dual-col (nth 1 ediff-dual)))
+             (diff-B (when dual-col (nth 2 ediff-dual)))
+             (src-win (if dual-col (get-buffer-window a-buf 0) (get-buffer-window this-buf 0)))
+             (mm-win (get-buffer-window mm-buf 0))
+             (actual-width (let ((base-w (if mm-win (window-width mm-win) diff-minimap-width)))
+                             (if (and (numberp diff-minimap-font-scale) (> diff-minimap-font-scale 0))
+                                 (ceiling (/ (float base-w) diff-minimap-font-scale))
+                               base-w)))
+             (nrows (max 1
+                         (let ((row-px (ceiling (* (frame-char-height)
+                                                   diff-minimap-font-scale))))
+                           (floor (/ (window-body-height
+                                      (or mm-win src-win (selected-window)) t)
+                                     row-px)))))
              (scale (/ (float total) nrows))
              (row-diff (make-vector nrows nil))
-             (diff-data (with-current-buffer this-buf
-                          (diff-minimap--collect-diff-data))))
+             (row-diff-A (when dual-col (make-vector nrows nil)))
+             (row-diff-B (when dual-col (make-vector nrows nil))))
         (setq diff-minimap--last-nrows nrows
               diff-minimap--last-themes (and (boundp 'custom-enabled-themes)
                                               custom-enabled-themes))
-        (with-current-buffer this-buf
-          (setq diff-minimap--last-tick (buffer-chars-modified-tick))
-          (dolist (change diff-data)
-            (let* ((ty (car change))
-                   (sl (nth 1 change))
-                   (el (nth 2 change))
-                   (fr (floor (/ (1- sl) scale)))
-                   (lr (min (1- nrows) (floor (/ (1- el) scale)))))
-              (cl-loop for r from fr to lr
-                       do (aset row-diff r ty))))
-          (diff-minimap--fringe-update diff-data))
-        ;; Write minimap content — normal background as text props,
-        ;; then diff colours as overlays for proper priority layering.
-        (let ((nrm-face `(:background ,diff-minimap--norm-bg :extend t))
-              (ins-face `(:background ,diff-minimap--ins-bg :extend t))
-              (chg-face `(:background ,diff-minimap--chg-bg :extend t))
-              (del-face `(:background ,diff-minimap--del-bg :extend t)))
+        (if dual-col
+            (progn
+              (dolist (change diff-A)
+                (let* ((ty (car change)) (sl (nth 1 change)) (el (nth 2 change))
+                       (fr (floor (/ (1- sl) scale)))
+                       (lr (min (1- nrows) (floor (/ (1- el) scale)))))
+                  (cl-loop for r from fr to lr do (aset row-diff-A r ty))))
+              (dolist (change diff-B)
+                (let* ((ty (car change)) (sl (nth 1 change)) (el (nth 2 change))
+                       (fr (floor (/ (1- sl) scale)))
+                       (lr (min (1- nrows) (floor (/ (1- el) scale)))))
+                  (cl-loop for r from fr to lr do (aset row-diff-B r ty)))))
+          (with-current-buffer this-buf
+            (setq diff-minimap--last-tick (buffer-chars-modified-tick))
+            (dolist (change diff-data)
+              (let* ((ty (car change))
+                     (sl (nth 1 change))
+                     (el (nth 2 change))
+                     (fr (floor (/ (1- sl) scale)))
+                     (lr (min (1- nrows) (floor (/ (1- el) scale)))))
+                (cl-loop for r from fr to lr
+                         do (aset row-diff r ty))))
+            (diff-minimap--fringe-update diff-data)))
+        (let* ((fbg (lambda (f attr d)
+                      (if (facep f)
+                          (let ((v (face-attribute f attr nil t)))
+                            (if (or (not v) (eq v 'unspecified) (not (stringp v))) d v))
+                        d)))
+               (resolved-faces (make-hash-table :test 'eq))
+               (nrm-face `(:background ,diff-minimap--norm-bg :extend t))
+               (ins-face `(:background ,diff-minimap--ins-bg :extend t))
+               (chg-face `(:background ,diff-minimap--chg-bg :extend t))
+               (del-face `(:background ,diff-minimap--del-bg :extend t))
+               ;; Helper to resolve arbitrary face symbols to text properties
+               (resolve (lambda (ty fallback)
+                          (if (facep ty)
+                              (or (gethash ty resolved-faces)
+                                  (puthash ty `(:background ,(funcall fbg ty :background (plist-get fallback :background)) :extend t) resolved-faces))
+                            fallback))))
           (with-current-buffer mm-buf
             (let ((inhibit-read-only t))
               (erase-buffer)
@@ -732,24 +908,40 @@ Viewport and cursor highlights are applied as overlays by
                   (insert
                    (propertize " " 'face nrm-face
                                'source-line sline 'source-buf this-buf)
-                   (propertize (make-string (1- diff-minimap-width) ?\s)
+                   (propertize (make-string (max 0 (1- actual-width)) ?\s)
                                'face nrm-face
                                'source-line sline 'source-buf this-buf)
                    (propertize "\n" 'face nrm-face))))
-              ;; Diff colour overlays at priority 3 — above viewport fill (1)
-              ;; and stipple (2), below cursor (10) and edge/outline bars (5).
+              ;; Diff colour overlays
               (dotimes (i nrows)
-                (let* ((dtype (aref row-diff i))
-                       (face (cond ((eq dtype 'added) ins-face)
-                                   ((eq dtype 'changed) chg-face)
-                                   ((eq dtype 'removed) del-face))))
-                  (when face
-                    (let ((ov (make-overlay (diff-minimap--row->pos i)
-                                            (diff-minimap--row->pos (1+ i))
-                                            mm-buf)))
-                      (overlay-put ov 'face face)
-                      (overlay-put ov 'priority 3)
-                       (overlay-put ov 'diff-minimap-overlay t)))))))
+                (if dual-col
+                    (let ((dtypeA (aref row-diff-A i))
+                          (dtypeB (aref row-diff-B i))
+                          (wA (ceiling (/ actual-width 2.0)))
+                          (pos (diff-minimap--row->pos i)))
+                      (when dtypeA
+                        (let* ((f (funcall resolve dtypeA chg-face))
+                               (ov (make-overlay pos (+ pos wA) mm-buf)))
+                          (overlay-put ov 'face f)
+                          (overlay-put ov 'priority 3)
+                          (overlay-put ov 'diff-minimap-overlay t)))
+                      (when dtypeB
+                        (let* ((f (funcall resolve dtypeB ins-face))
+                               (ov (make-overlay (+ pos wA) (+ pos actual-width) mm-buf)))
+                          (overlay-put ov 'face f)
+                          (overlay-put ov 'priority 3)
+                          (overlay-put ov 'diff-minimap-overlay t))))
+                  (let* ((dtype (aref row-diff i))
+                         (face (cond ((eq dtype 'added) ins-face)
+                                     ((eq dtype 'changed) chg-face)
+                                     ((eq dtype 'removed) del-face))))
+                    (when face
+                      (let ((ov (make-overlay (diff-minimap--row->pos i)
+                                              (diff-minimap--row->pos (1+ i))
+                                              mm-buf)))
+                        (overlay-put ov 'face face)
+                        (overlay-put ov 'priority 3)
+                        (overlay-put ov 'diff-minimap-overlay t))))))))
             ;; Recreate viewport/cursor overlays from source buffer context
             (diff-minimap--update-viewport)
             ;; Insert pushes point to point-max — move it back so redisplay
@@ -762,10 +954,18 @@ Viewport and cursor highlights are applied as overlays by
   "Immediate post-command-hook: update viewport/cursor overlays or full re-render.
 Detects buffer switches and re-renders for the new buffer automatically.
 Clears the minimap when entering a buffer with no diff backend."
-  (when (get-buffer-window diff-minimap--buffer-name)
+  (when (get-buffer-window diff-minimap--buffer-name 0)
     (let ((buf (current-buffer))
           (mm-buf (get-buffer diff-minimap--buffer-name)))
       (when mm-buf
+        (when (and diff-minimap--ediff-control-buffer
+                   (buffer-live-p diff-minimap--ediff-control-buffer)
+                   (or (eq buf diff-minimap--ediff-control-buffer)
+                       (with-current-buffer diff-minimap--ediff-control-buffer
+                         (or (eq buf (bound-and-true-p ediff-buffer-A))
+                             (eq buf (bound-and-true-p ediff-buffer-B))
+                             (eq buf (bound-and-true-p ediff-buffer-C))))))
+          (setq buf diff-minimap--ediff-control-buffer))
         (unless (eq buf diff-minimap--last-buffer)
           (setq diff-minimap--last-buffer buf)
           (if (diff-minimap--backend-available-p)
@@ -788,8 +988,8 @@ Clears the minimap when entering a buffer with no diff backend."
                    (eq buf diff-minimap--last-buffer))
           (let* ((tick (with-current-buffer buf
                          (buffer-chars-modified-tick)))
-                  (src-win (get-buffer-window buf))
-                   (cur-nrows (let ((mm-win (get-buffer-window mm-buf)))
+                  (src-win (get-buffer-window buf 0))
+                   (cur-nrows (let ((mm-win (get-buffer-window mm-buf 0)))
                                 (when mm-win
                                   (let ((row-px (ceiling
                                                  (* (frame-char-height)
@@ -1034,37 +1234,58 @@ When `demap' is absent, behaves as `diff-minimap-toggle'."
 
 ;;;###autoload
 (defun diff-minimap-ediff-setup ()
-  "Open the diff minimap during an Ediff session.
-Add this function to `ediff-startup-hook' to automatically show the
-minimap when starting Ediff:
-
-  (add-hook \\='ediff-startup-hook #\\='diff-minimap-ediff-setup)
-
-When the minimap is already open this is a no-op."
+  "Open the diff minimap during an Ediff session."
   (interactive)
-  (when (and (eq major-mode 'ediff-mode)
-             (not (get-buffer-window diff-minimap--buffer-name)))
-    (diff-minimap-mode 1)
-    (let* ((a-buf (and (boundp 'ediff-buffer-A)
-                       (buffer-live-p ediff-buffer-A)
-                       ediff-buffer-A))
-           (b-buf (and (boundp 'ediff-buffer-B)
-                       (buffer-live-p ediff-buffer-B)
-                       ediff-buffer-B))
-           (c-buf (and (boundp 'ediff-buffer-C)
-                       (buffer-live-p ediff-buffer-C)
-                       ediff-buffer-C)))
-      ;; Defer window creation to avoid interfering with ediff's own
-      ;; window-layout setup during ediff-startup-hook.
+  (when (and (boundp 'ediff-buffer-A) (buffer-live-p ediff-buffer-A))
+    (setq diff-minimap--ediff-control-buffer (current-buffer))
+    (unless (get-buffer-window diff-minimap--buffer-name)
+      (diff-minimap-mode 1)
       (run-with-idle-timer 0 nil
         (lambda ()
-          (when (and (not (get-buffer-window diff-minimap--buffer-name))
-                     (or (and a-buf (buffer-live-p a-buf))
-                         (and b-buf (buffer-live-p b-buf))))
-            (with-current-buffer (or (and a-buf (buffer-live-p a-buf) a-buf)
-                                     (and b-buf (buffer-live-p b-buf) b-buf)
-                                     c-buf)
-              (diff-minimap-toggle))))))))
+          (let* ((ed-ctrl diff-minimap--ediff-control-buffer)
+                 (a-b (and ed-ctrl (buffer-live-p ed-ctrl) (with-current-buffer ed-ctrl (and (boundp 'ediff-buffer-A) ediff-buffer-A))))
+                 (b-b (and ed-ctrl (buffer-live-p ed-ctrl) (with-current-buffer ed-ctrl (and (boundp 'ediff-buffer-B) ediff-buffer-B))))
+                 (c-b (and ed-ctrl (buffer-live-p ed-ctrl) (with-current-buffer ed-ctrl (and (boundp 'ediff-buffer-C) ediff-buffer-C)))))
+            (when (and a-b b-b (not (get-buffer-window diff-minimap--buffer-name 0)))
+              (let ((win (or (get-buffer-window a-b 0)
+                             (get-buffer-window b-b 0)
+                             (get-buffer-window c-b 0))))
+                (when win
+                  (with-selected-window win
+                    (diff-minimap-toggle)))))))))))
+
+(defun diff-minimap-ediff-teardown ()
+  "Hide the minimap when Ediff quits."
+  (setq diff-minimap--ediff-control-buffer nil)
+  (when (get-buffer-window diff-minimap--buffer-name 0)
+    (diff-minimap-toggle)))
+
+(defun diff-minimap-ediff-debug ()
+  "Print diagnostic info about the Ediff dual-column minimap state.
+Run this from the Ediff control panel (the small \"*Ediff Control Panel*\"
+buffer) while an Ediff session is active."
+  (interactive)
+  (let* ((ctrl diff-minimap--ediff-control-buffer)
+         (ctrl-live (and ctrl (buffer-live-p ctrl)))
+         (a-buf (and ctrl-live (with-current-buffer ctrl (bound-and-true-p ediff-buffer-A))))
+         (b-buf (and ctrl-live (with-current-buffer ctrl (bound-and-true-p ediff-buffer-B))))
+         (dual-col (and a-buf (buffer-live-p a-buf) b-buf (buffer-live-p b-buf)))
+         (n-diffs (and ctrl-live (with-current-buffer ctrl
+                        (and (boundp 'ediff-number-of-differences)
+                             ediff-number-of-differences))))
+         (ediff-dual (and dual-col
+                         (with-current-buffer ctrl
+                           (diff-minimap--collect-ediff-dual)))))
+    (message "Ediff debug:\n  ctrl-buf: %s (live: %s)\n  buf-A: %s (live: %s)\n  buf-B: %s (live: %s)\n  dual-col: %s\n  n-diffs: %s\n  total-virt: %s\n  diff-A entries: %s\n  diff-B entries: %s\n  diff-A: %s\n  diff-B: %s"
+             ctrl ctrl-live
+             a-buf (and a-buf (buffer-live-p a-buf))
+             b-buf (and b-buf (buffer-live-p b-buf))
+             dual-col n-diffs
+             (and ediff-dual (nth 0 ediff-dual))
+             (and ediff-dual (length (nth 1 ediff-dual)))
+             (and ediff-dual (length (nth 2 ediff-dual)))
+             (and ediff-dual (nth 1 ediff-dual))
+             (and ediff-dual (nth 2 ediff-dual)))))
 
 (defun diff-minimap--pulse-range (start end)
   "Momentarily highlight lines from START to END (1-indexed, inclusive)."
@@ -1277,6 +1498,9 @@ closed first.  It will be re-opened by `ediff-startup-hook' via
   (when diff-minimap--ediff-advised
     (advice-remove 'ediff-setup #'diff-minimap--before-ediff-setup)
     (setq diff-minimap--ediff-advised nil)))
+
+(add-hook 'ediff-startup-hook #'diff-minimap-ediff-setup)
+(add-hook 'ediff-quit-hook #'diff-minimap-ediff-teardown)
 
 (provide 'diff-minimap)
 ;;; diff-minimap.el ends here

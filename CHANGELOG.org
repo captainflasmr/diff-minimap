@@ -10,7 +10,19 @@ This document contains the release notes for diff-minimap.
 
 * Versions
 
+** 0.7.0 — <2026-05-17>
+
+Dual-column Ediff minimap and granular overlay scanning.
+
+- Add automatic dual-column minimap for Ediff sessions.  When Ediff is active, the minimap displays Buffer A in the left column and Buffer B in the right column, vertically aligned.
+- Capture granular "fine diffs" (word-level changes) directly from Ediff's buffer highlights.
+- Thematic colour synchronization: minimap colors derive from Ediff's own faces (=ediff-current-diff-A=, =ediff-fine-diff-B=, etc.), ensuring the minimap exactly matches the buffer's visual state.
+- Seamless Ediff integration: automatic minimap startup via =ediff-startup-hook= and teardown via =ediff-quit-hook=.
+- High-fidelity viewport sync: the minimap viewport follows Ediff navigation (=n= / =p=) from the control panel.
+- Virtual coordinate mapping: ensure Buffer A and Buffer B remain horizontally synchronized in the minimap representation even when hunks contain differing numbers of physical lines.
+
 ** 0.6.0 — <2026-05-15>
+
 
 Inline overlay hunk preview with per-change narrowing.
 
