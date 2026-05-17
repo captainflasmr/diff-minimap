@@ -9,31 +9,9 @@ This document contains the current bugs/improvements, this is just for me mainly
 
 * Bugs/Improvements
 
-** TODO toggle all diffs on and off inline peek
-
-** DOING usage in ediff
-
-** DOING side-bar to work without diff-hl?
-
 ** DOING complement demap
 
-** DOING for diff peek don't show current just the diffs
-
-** TODO git versions, jump through older with commit message in header line
-
 ** TODO mouse scrolling in viewport
-
-** TODO add automated unit tests
-
-Currently validation is manual (byte-compile, visual inspection). A basic ERT suite covering rendering logic, click-to-jump, and mode toggle would catch regressions.
-
-** TODO consider debouncing rapid re-renders
-
-The =post-command-hook= scheduler fires on every command. In files with many =diff-hl= overlays this could cause noticeable lag. A debounce or throttle on =diff-minimap--schedule= would help on large buffers.
-
-** TODO investigate fringe or margin-based rendering
-
-The current approach uses a side window with tiny text. An alternative would be to draw line indicators in the left fringe or right margin of the source buffer, eliminating the need for a separate window.
 
 * Issues
 
