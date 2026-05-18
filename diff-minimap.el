@@ -1437,8 +1437,6 @@ Uses the configured `diff-minimap-diff-backend' to find hunks."
 
 (defvar diff-minimap-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "M-]") #'diff-minimap-next-hunk)
-    (define-key map (kbd "M-[") #'diff-minimap-previous-hunk)
     (define-key map (kbd "C-c p") #'diff-minimap-show-hunk)
     (define-key map (kbd "C-c P") #'diff-minimap-show-all-hunks)
     map)
