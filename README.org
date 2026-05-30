@@ -29,7 +29,17 @@ Or with =use-package= (no =:ensure= since it is a local package):
 
 The minor mode =diff-minimap-mode= is automatically activated when the minimap opens and deactivated when it closes.  It is a global mode — once toggled on, the minimap follows the selected buffer automatically, re-rendering for each file that has a diff backend available, and clearing when entering Dired or other buffers without changes.
 
-Click any row in the minimap to jump the source buffer to that line.
+** Mouse navigation
+
+The minimap responds to the mouse so you can move around the source
+buffer directly from it:
+
+| Action                    | Effect                                                       |
+|---------------------------+--------------------------------------------------------------|
+| Click (=mouse-1=)         | Jump the source buffer to the clicked row                    |
+| Drag (=mouse-1=)          | Scrub the source view continuously while the button is held  |
+| Wheel / two-finger scroll | Scroll the source buffer (=diff-minimap-wheel-scroll-lines=) |
+| Right-click (=mouse-3=)   | Jump to the row and show its diff hunk preview               |
 
 ** Hunk navigation
 
@@ -122,6 +132,7 @@ Set it in your config:
 | =diff-minimap-fringe-side=       | 'left        | Which fringe (=left= or =right=)                             |
 | =diff-minimap-search-highlights= | t            | Show isearch matches as yellow bars in the minimap           |
 | =diff-minimap-colour-source=     | 'diff-hl     | Prefer =diff-hl= fringe faces or built-in =diff= faces       |
+| =diff-minimap-wheel-scroll-lines= | 3           | Source lines scrolled per wheel notch over the minimap       |
 
 See the [[#stipple-patterns][stipple pattern table]] below for predefined values.
 

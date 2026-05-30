@@ -10,6 +10,15 @@ This document contains the release notes for diff-minimap.
 
 * Versions
 
+** 0.8.0 — <2026-05-30>
+
+Interactive mouse navigation from the minimap.
+
+- Drag with =mouse-1= within the minimap to scrub the source buffer: the grabbed row scrolls the original buffer immediately and the view tracks the pointer continuously until release (=diff-minimap--drag-handler=).
+- Scroll the source buffer with the mouse wheel / two-finger trackpad scroll over the minimap.  Add =diff-minimap-wheel-scroll-lines= (default 3) to control the step.
+- Decode the clicked row from the minimap buffer explicitly (=diff-minimap--event-source=) rather than the current buffer, fixing click-to-jump and right-click hunk preview, which silently did nothing because mouse commands run with the source buffer current.  Clicks landing on a row's trailing newline now fall back to the row start.
+- Fix a misplaced closing paren that folded =diff-minimap--post-command= and the entire mouse-handler / hunk-preview block into a single form, so those commands never loaded.
+
 ** 0.7.1 — <2026-05-17>
 
 Refined hunk preview and toggle-all previews command.

@@ -1,7 +1,7 @@
 ;;; diff-minimap.el --- VSCode-style minimap showing diff regions -*- lexical-binding: t; -*-
 ;;
 ;; Author: James Dyer <captainflasmr@gmail.com>
-;; Version: 0.7.1
+;; Version: 0.8.0
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: vc, tools, convenience
 ;; URL: https://github.com/captainflasmr/diff-minimap
@@ -34,7 +34,9 @@
 ;;   C-x v m                      ;; same, under the VC prefix map
 ;;
 ;; The minimap auto-refreshes on scroll and save.  Click a row in the
-;; minimap to jump to that line in the source buffer.
+;; minimap to jump to that line in the source buffer, drag with mouse-1
+;; to scrub the source view, or use the wheel / two-finger scroll over
+;; the minimap to scroll the source buffer.
 ;;
 ;; Customise `diff-minimap-font-scale', `diff-minimap-width', and
 ;; `diff-minimap-side' to tweak the appearance.
@@ -139,6 +141,11 @@ Disabled when nil."
 `diff'    — prefer built-in =diff-added/changed/removed= faces."
   :type '(choice (const :tag "diff-hl fringe colours" diff-hl)
                   (const :tag "Built-in diff colours" diff))
+  :group 'diff-minimap)
+
+(defcustom diff-minimap-wheel-scroll-lines 3
+  "Number of source-buffer lines to scroll per wheel notch in the minimap."
+  :type 'integer
   :group 'diff-minimap)
 
 (defface diff-minimap-font
@@ -1006,7 +1013,7 @@ Clears the minimap when entering a buffer with no diff backend."
                                               diff-minimap--last-themes)))))
             (if needs-full
                 (diff-minimap--render)
-              (diff-minimap--update-viewport))))))
+              (diff-minimap--update-viewport)))))))
 
 (defun diff-minimap--after-save ()
   "Force re-render after save (idle delay lets the backend catch up)."
@@ -1018,26 +1025,93 @@ Clears the minimap when entering a buffer with no diff backend."
          (with-current-buffer buf
            (diff-minimap--render)))))))
 
-(defun diff-minimap--click-handler ()
-  "Handle mouse click: scroll source to clicked line."
-  (interactive)
-  (let* ((pos (event-start last-input-event))
-         (line (get-text-property (posn-point pos) 'source-line))
-         (buf (get-text-property (posn-point pos) 'source-buf)))
-    (when (and line buf (buffer-live-p buf))
-      (with-selected-window (get-buffer-window buf)
+(defun diff-minimap--event-source (event)
+  "Return (LINE . BUF) for the minimap row under EVENT, or nil.
+Reads the `source-line'/`source-buf' text properties from the minimap
+buffer at the EVENT position — explicitly from that buffer, not the
+current one, since mouse commands run with the source buffer current.
+Falls back to the row's first column for clicks landing on the trailing
+newline, which carries no properties."
+  (let* ((pos (event-start event))
+         (win (posn-window pos))
+         (pt (posn-point pos)))
+    (when (and pt (windowp win))
+      (let* ((mmbuf (window-buffer win))
+             (bol (with-current-buffer mmbuf
+                    (save-excursion (goto-char pt) (line-beginning-position))))
+             (line (or (get-text-property pt 'source-line mmbuf)
+                       (get-text-property bol 'source-line mmbuf)))
+             (buf (or (get-text-property pt 'source-buf mmbuf)
+                      (get-text-property bol 'source-buf mmbuf))))
+        (when (and line buf (buffer-live-p buf))
+          (cons line buf))))))
+
+(defun diff-minimap--scroll-source-to-event (event)
+  "Scroll the source buffer so the row under EVENT maps to the window top.
+Moves the source window to the line decoded from EVENT and refreshes the
+viewport indicator so it tracks live.  Returns non-nil when a scroll
+happened."
+  (let* ((info (diff-minimap--event-source event))
+         (line (car info))
+         (buf (cdr info))
+         (win (and buf (get-buffer-window buf 0))))
+    (when (window-live-p win)
+      (with-selected-window win
         (goto-char (point-min))
         (forward-line (1- line))
-        (recenter 0)))))
+        (recenter 0)
+        (diff-minimap--update-viewport))
+      t)))
 
-(defun diff-minimap--click-show-hunk ()
+(defun diff-minimap--click-handler (event)
+  "Handle mouse click: scroll source to the line under EVENT."
+  (interactive "e")
+  (diff-minimap--scroll-source-to-event event))
+
+(defun diff-minimap--drag-handler (event)
+  "Scroll the source buffer while dragging mouse-1 within the minimap.
+The grabbed row scrolls the original buffer immediately, then following
+the pointer up or down scrubs the source view to track the row beneath
+it until the button is released."
+  (interactive "e")
+  (diff-minimap--scroll-source-to-event event)
+  (track-mouse
+    (let ((ev (read-event)))
+      (while (mouse-movement-p ev)
+        (diff-minimap--scroll-source-to-event ev)
+        (setq ev (read-event))))))
+
+(defun diff-minimap--scroll-source-window (lines)
+  "Scroll the source window by LINES (negative scrolls up) and refresh viewport."
+  (when (and diff-minimap--last-buffer
+             (buffer-live-p diff-minimap--last-buffer))
+    (let ((win (get-buffer-window diff-minimap--last-buffer 0)))
+      (when (window-live-p win)
+        (with-selected-window win
+          (condition-case nil
+              (scroll-up lines)
+            ((beginning-of-buffer end-of-buffer) nil))
+          (diff-minimap--update-viewport))))))
+
+(defun diff-minimap-mouse-wheel-down (_event)
+  "Scroll the source buffer forward a notch from the minimap."
+  (interactive "e")
+  (diff-minimap--scroll-source-window diff-minimap-wheel-scroll-lines))
+
+(defun diff-minimap-mouse-wheel-up (_event)
+  "Scroll the source buffer backward a notch from the minimap."
+  (interactive "e")
+  (diff-minimap--scroll-source-window (- diff-minimap-wheel-scroll-lines)))
+
+(defun diff-minimap--click-show-hunk (event)
   "Handle right-click: jump to source and preview the diff hunk."
-  (interactive)
-  (let* ((pos (event-start last-input-event))
-         (line (get-text-property (posn-point pos) 'source-line))
-         (buf (get-text-property (posn-point pos) 'source-buf)))
-    (when (and line buf (buffer-live-p buf))
-      (with-selected-window (get-buffer-window buf)
+  (interactive "e")
+  (let* ((info (diff-minimap--event-source event))
+         (line (car info))
+         (buf (cdr info))
+         (win (and buf (get-buffer-window buf 0))))
+    (when (window-live-p win)
+      (with-selected-window win
         (goto-char (point-min))
         (forward-line (1- line))
         (recenter 0)
@@ -1181,7 +1255,7 @@ When point moves outside the hunk range, a single-hunk overlay is automatically 
              (hunk (cl-find-if (lambda (h) (<= (nth 1 h) line (max (nth 1 h) (nth 2 h)))) data)))
         (unless hunk
           (user-error "No diff hunk at line %d" line))
-        (diff-minimap--show-hunk-overlay hunk line))))))
+        (diff-minimap--show-hunk-overlay hunk line)))))
 
 ;;;###autoload
 (defun diff-minimap-toggle ()
@@ -1211,9 +1285,13 @@ When point moves outside the hunk range, a single-hunk overlay is automatically 
           (setq-local right-fringe-width 0)
           (face-remap-set-base 'default :height diff-minimap-font-scale)
           (let ((map (make-sparse-keymap)))
+            (define-key map [down-mouse-1] #'diff-minimap--drag-handler)
             (define-key map [mouse-1] #'diff-minimap--click-handler)
-            (define-key map [down-mouse-1] #'ignore)
             (define-key map [mouse-3] #'diff-minimap--click-show-hunk)
+            (define-key map [wheel-up] #'diff-minimap-mouse-wheel-up)
+            (define-key map [wheel-down] #'diff-minimap-mouse-wheel-down)
+            (define-key map [mouse-4] #'diff-minimap-mouse-wheel-up)
+            (define-key map [mouse-5] #'diff-minimap-mouse-wheel-down)
             (use-local-map map))
           (setq-local mode-line-format nil)
           (setq-local header-line-format nil))

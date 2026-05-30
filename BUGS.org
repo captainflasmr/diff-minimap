@@ -11,8 +11,6 @@ This document contains the current bugs/improvements, this is just for me mainly
 
 ** DOING complement demap
 
-** TODO mouse scrolling in viewport
-
 * Issues
 
 Issues on the [[https://github.com/captainflasmr/diff-minimap/issues][GitHub Issues page]]
