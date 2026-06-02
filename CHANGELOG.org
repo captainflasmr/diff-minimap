@@ -10,6 +10,16 @@ This document contains the release notes for diff-minimap.
 
 * Versions
 
+** 0.8.1 — <2026-06-02>
+
+Bug fixes and load-time hygiene.
+
+- Stop hijacking Ediff on mere =require=: the =ediff-startup-hook= / =ediff-quit-hook= hooks are now installed only while =diff-minimap-mode= is enabled (and removed when it is disabled), instead of unconditionally at load time.  Loading the package no longer force-opens the minimap or enables the global mode during unrelated Ediff sessions.
+- Fix a crash in =diff-minimap-show-all-hunks= for buffers visiting no file: =diff-minimap--show-hunk-overlay= now guards =buffer-file-name= and returns nil cleanly instead of erroring in =file-name-directory= / =file-relative-name=.
+- Surface the previously silent inline-preview failure: =diff-minimap-show-hunk= now reports when no git diff is available to preview, rather than appearing to do nothing (the inline preview is git-only regardless of the active backend).
+- Add =(require 'subr-x)= for the =string-empty-p= / =string-join= / =when-let= / =if-let= macros on the declared Emacs 27.1 minimum.
+- Declare =ediff-get-diff-overlay=, =demap-open=, and =demap-close= to silence byte-compiler warnings, and move the =diff-minimap--ediff-control-buffer= defvar above its first use (resolving a free-variable warning).
+
 ** 0.8.0 — <2026-05-30>
 
 Interactive mouse navigation from the minimap.
