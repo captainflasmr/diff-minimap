@@ -1,0 +1,20 @@
+* Ediff Integration
+
+When starting an Ediff session, diff-minimap displays a side-by-side minimap showing both buffers' diff regions simultaneously — similar to VSCode's diff minimap.
+
+** Dual-Column Rendering
+
+Each minimap row is split into two halves:
+
+- Left half :: buffer A's diff status
+- Right half :: buffer B's diff status
+
+For example, with the default ~diff-minimap-width~ of 6, each row has 3 columns for A and 3 columns for B. Diff regions are highlighted with the same colours used by the rest of the minimap (yellow for changed, green for added, red for removed).
+
+** Viewport and Navigation
+
+- When you press =n=/=p= from the Ediff control panel, the minimap's viewport indicator updates to show your current position in the diff.
+
+** Data Source
+
+Diff data comes from Ediff's own overlays (~ediff-diff-num~ property), not from diff-hl or git. This means the minimap shows exactly what Ediff sees, even for complex diffs (merge conflicts, 3-way diffs, etc.).
