@@ -31,6 +31,8 @@ The minor mode =diff-minimap-mode= is automatically activated when the minimap o
 
 The minimap side window is marked =no-other-window=, so =C-x o= and window-motion commands skip it.  Interact with the minimap using the mouse.
 
+Toggling the minimap off (=C-z m=) clears inline hunks only in the buffer where you invoke it.  Other buffers keep their inline hunks and continue updating live; the global mode stays enabled while any buffer still shows inline hunks.
+
 Opening the minimap shows every diff hunk inline (when =diff-minimap-inline-preview= is non-nil): removed lines are read-only virtual text, while the added/changed lines remain ordinary buffer text you can edit in place.  The inline views update live as you type, and =C-x v ]= / =C-x v [= step between the hunks.
 
 ** Mouse navigation

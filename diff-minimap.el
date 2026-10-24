@@ -1530,6 +1530,15 @@ Overlays whose hunk no longer exists in the new diff are dropped."
                   (diff-minimap--show-hunk-overlay hunk (nth 1 hunk) full-patch)))))
           (set-marker marker nil))))))
 
+(defun diff-minimap--inline-active-in-any-buffer-p ()
+  "Return non-nil if any live buffer has visible inline hunks."
+  (cl-some (lambda (buf)
+             (with-current-buffer buf
+               (and diff-minimap--inline-active
+                    (cl-some (lambda (ov) (overlay-get ov 'diff-minimap-hunk))
+                             (overlays-in (point-min) (point-max))))))
+           (buffer-list)))
+
 ;;;###autoload
 (defun diff-minimap-toggle ()
   "Toggle the diff minimap side window."
@@ -1537,9 +1546,15 @@ Overlays whose hunk no longer exists in the new diff are dropped."
   (let ((mm-buf (get-buffer-create diff-minimap--buffer-name)))
     (if (get-buffer-window mm-buf)
         (progn
-          (diff-minimap-mode -1)
+          ;; Closing the sidebar only clears inline hunks in the buffer
+          ;; where the toggle was invoked.  Other buffers keep their
+          ;; inline hunks (and live updates) intact.
+          (diff-minimap--remove-hunk-overlays)
+          (setq diff-minimap--inline-active nil)
+          (diff-minimap--fringe-clear)
           (delete-window (get-buffer-window mm-buf))
-          (diff-minimap--fringe-clear))
+          (unless (diff-minimap--inline-active-in-any-buffer-p)
+            (diff-minimap-mode -1)))
       (let ((win (display-buffer-in-side-window
                   mm-buf
                   `((side . ,diff-minimap-side)
@@ -1571,7 +1586,8 @@ Overlays whose hunk no longer exists in the new diff are dropped."
           (setq-local mode-line-format nil)
           (setq-local header-line-format nil))
         (diff-minimap--render)
-        (diff-minimap-mode 1)
+        (unless (bound-and-true-p diff-minimap-mode)
+          (diff-minimap-mode 1))
         (when (and diff-minimap-inline-preview
                    (not diff-minimap--ediff-control-buffer))
           (let ((buf (current-buffer)))
