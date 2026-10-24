@@ -10,6 +10,35 @@ This document contains the release notes for diff-minimap.
 
 * Versions
 
+** 0.10.0 — <2026-10-24>
+
+Live diff updates while typing.
+
+- Add =diff-minimap-live-diff= (default =t=) and =diff-minimap-live-diff-delay= (default 0.2s).  Editing a file buffer recomputes the diff from the unsaved buffer text against git =HEAD= after an idle delay, so inline hunks and the minimap follow changes without saving.  Reverting the text to its =HEAD= state removes the inline hunks automatically.
+- Add =diff-minimap--git-output=, which passes git arguments directly instead of shell-splitting a command string, and use repo-root-relative paths for =git show=.  This fixes live diffs for files in subdirectories and file names containing spaces.
+- =diff-minimap--post-command= defers a full minimap render while a live update is pending, avoiding a git diff on every keystroke; the idle timer refreshes both the minimap and the inline hunks.
+- =diff-minimap--inline-active= tracks whether a buffer should keep its inline hunks in sync.  =C-c P= (toggle all off) stops automatic re-showing until inline hunks are shown again with =C-c p= or =C-c P=.
+- Untracked files are treated as empty at =HEAD=, so every line shows as an addition in the live view.
+
+** 0.9.0 — <2026-10-23>
+
+Editable inline diffs.
+
+- =diff-minimap-show-hunk= now shows an editable inline diff instead of replacing the changed lines with read-only virtual text.  Removed lines are rendered as read-only virtual text with the =diff-minimap-inline-removed= face; added/changed lines remain ordinary buffer text, highlighted with =diff-minimap-inline-added= / =diff-minimap-inline-changed=, so they can be edited in place.
+- Add =diff-minimap-inline-preview= (default =t=).  Opening the minimap now shows every diff hunk inline, and =diff-minimap-next-hunk= / =diff-minimap-previous-hunk= ensure the destination hunk is visible without removing the other inline hunks.  =C-c p= toggles one hunk without clearing the rest.
+- Inline hunk overlays follow edits with markers and are recomputed on save.  Hunks that no longer exist after saving are removed, and disabling =diff-minimap-mode= clears all inline hunk overlays.
+- Pure deletions are now reported at the line where the removed text was (the first line after the deletion), so hunk navigation and the inline overlay land on the deletion point instead of the preceding line.
+- Remove the now-unused =diff-minimap-hunk-region= face; =diff-minimap-inline-removed=, =diff-minimap-inline-added=, and =diff-minimap-inline-changed= replace it.
+- Give the inline faces explicit light/dark red, green, and amber backgrounds instead of inheriting =diff-added= / =diff-removed= / =diff-changed=.  Themes that leave those faces unspecified (e.g. Doom Lantern) previously showed only the fringe square until =vc-diff= happened to load =diff-mode=.
+- README: hunk navigation is documented as =C-x v ]= / =C-x v [=.  The stale =M-]= / =M-[= claims are gone; those bindings had already been removed from the mode map.
+
+** 0.8.2 — <2026-10-23>
+
+Stop shadowing stock VC commands and drop demap integration.
+
+- Remove the load-time =C-x v m= and =C-x v M= bindings from =vc-prefix-map=.  =C-x v m= is stock =vc-merge= and =C-x v M= is the =vc-diff-mergebase= / =vc-log-mergebase= prefix, so merely loading the package silently replaced them (and until it loaded, =C-x v m= still ran =vc-merge=, making the documented toggle key unreliable).  Use =M-x diff-minimap-toggle=, or bind it yourself; hunk navigation on =C-x v ]= / =C-x v [= is unchanged because those keys are free in stock VC.
+- Remove the =demap= integration: =diff-minimap-toggle-with-demap= and the =demap-open= / =demap-close= declarations are gone, and the README no longer advertises a two-panel =demap= layout.
+
 ** 0.8.1 — <2026-06-02>
 
 Bug fixes and load-time hygiene.

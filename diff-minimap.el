@@ -1,7 +1,7 @@
 ;;; diff-minimap.el --- VSCode-style minimap showing diff regions -*- lexical-binding: t; -*-
 ;;
 ;; Author: James Dyer <captainflasmr@gmail.com>
-;; Version: 0.8.1
+;; Version: 0.10.0
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: vc, tools, convenience
 ;; URL: https://github.com/captainflasmr/diff-minimap
@@ -31,12 +31,18 @@
 ;;
 ;;   (require 'diff-minimap)
 ;;   M-x diff-minimap-toggle      ;; open/close the minimap
-;;   C-x v m                      ;; same, under the VC prefix map
+;;   C-x v ] / C-x v [            ;; step through diff hunks
 ;;
-;; The minimap auto-refreshes on scroll and save.  Click a row in the
-;; minimap to jump to that line in the source buffer, drag with mouse-1
-;; to scrub the source view, or use the wheel / two-finger scroll over
-;; the minimap to scroll the source buffer.
+;; The toggle is deliberately left unbound so loading the package does not
+;; shadow stock VC keys (`C-x v m' is `vc-merge').  Bind it in your own
+;; configuration if you want a shortcut.  Opening the minimap shows every
+;; hunk inline; removed lines are read-only virtual text, while
+;; added/changed lines stay in the buffer and can be edited in place.  The
+;; diff updates live as you type, and reverting text to HEAD removes the
+;; inline hunk.  The minimap auto-refreshes on scroll and save.  Click a
+;; row in the minimap to jump to that line in the source buffer, drag with
+;; mouse-1 to scrub the source view, or use the wheel / two-finger scroll
+;; over the minimap to scroll the source buffer.
 ;;
 ;; Customise `diff-minimap-font-scale', `diff-minimap-width', and
 ;; `diff-minimap-side' to tweak the appearance.
@@ -50,8 +56,6 @@
 (defvar diff-hl-mode)
 
 (declare-function ediff-get-diff-overlay "ediff-util" (n buf-type))
-(declare-function demap-open "demap")
-(declare-function demap-close "demap")
 
 (defgroup diff-minimap nil
   "VSCode-style minimap showing diff regions across the entire buffer."
@@ -153,6 +157,29 @@ Disabled when nil."
   :type 'integer
   :group 'diff-minimap)
 
+(defcustom diff-minimap-inline-preview t
+  "Whether opening and navigating the minimap shows editable inline diffs.
+When non-nil, opening the minimap shows every diff hunk inline, and
+`diff-minimap-next-hunk' / `diff-minimap-previous-hunk' ensure the
+destination hunk is shown too.  Removed lines are read-only virtual
+text, while added/changed lines remain ordinary editable buffer text."
+  :type 'boolean
+  :group 'diff-minimap)
+
+(defcustom diff-minimap-live-diff t
+  "Whether to recompute the diff from unsaved buffer text while typing.
+When non-nil, editing updates the minimap and any inline hunks after
+`diff-minimap-live-diff-delay' seconds of idle time.  The live diff
+compares the git HEAD version with the current buffer, so reverting the
+text to its original state removes the inline hunks without saving."
+  :type 'boolean
+  :group 'diff-minimap)
+
+(defcustom diff-minimap-live-diff-delay 0.2
+  "Idle seconds before recomputing the live diff after an edit."
+  :type 'number
+  :group 'diff-minimap)
+
 (defface diff-minimap-font
   '((t :height 0.4 :inherit default))
   "Face used for the minimap buffer — tiny font for fine-grained display."
@@ -178,17 +205,41 @@ Disabled when nil."
   "Face for search-match highlights in the minimap."
   :group 'diff-minimap)
 
-(defface diff-minimap-hunk-region
-  '((((class color) (min-colors 88) (background light))
-     :background "#f4f4f4" :extend t)
-    (((class color) (min-colors 88) (background dark))
-     :background "#222222" :extend t)
-    (t :inherit diff-hunk-header :extend t))
-  "Face for the highlighted hunk region when showing inline preview."
+(defface diff-minimap-inline-removed
+  '((((class color) (min-colors 88) (background dark))
+     :background "#5a1e1e" :foreground "#ffb3b3" :extend t)
+    (((class color) (min-colors 88) (background light))
+     :background "#ffd7d5" :foreground "#82071e" :extend t)
+    (t :background "#5a1e1e" :extend t))
+  "Face for removed lines shown as read-only virtual text inline."
+  :group 'diff-minimap)
+
+(defface diff-minimap-inline-added
+  '((((class color) (min-colors 88) (background dark))
+     :background "#204d26" :extend t)
+    (((class color) (min-colors 88) (background light))
+     :background "#ccffd8" :extend t)
+    (t :background "#204d26" :extend t))
+  "Face for added lines in an editable inline diff."
+  :group 'diff-minimap)
+
+(defface diff-minimap-inline-changed
+  '((((class color) (min-colors 88) (background dark))
+     :background "#4d4218" :extend t)
+    (((class color) (min-colors 88) (background light))
+     :background "#ffe7c2" :extend t)
+    (t :background "#4d4218" :extend t))
+  "Face for changed lines in an editable inline diff."
   :group 'diff-minimap)
 
 (defvar-local diff-minimap--last-tick nil
   "Buffer tick at last full render — for detecting content changes.")
+
+(defvar-local diff-minimap--live-diff-timer nil
+  "Buffer-local idle timer for a pending live diff refresh.")
+
+(defvar-local diff-minimap--inline-active nil
+  "Whether this buffer should keep inline hunks in sync with edits.")
 
 (defvar-local diff-minimap--last-nrows nil
   "Minimap row count at last full render — for detecting window resizes.")
@@ -364,34 +415,93 @@ Returns a list of (TYPE START-LINE END-LINE) or nil."
                     (push (list ty sl el) result))))))))
       result)))
 
-(defun diff-minimap--collect-from-vc ()
-  "Collect diff data using git.
-Returns a list of (TYPE START-LINE END-LINE) or nil."
-  (when-let ((file (buffer-file-name)))
-    (let* ((default-directory (file-name-directory file))
-           (git (executable-find "git")))
-      (when git
-        (let* ((rel-file (file-relative-name file))
-               (output
-                (or (diff-minimap--git-diff
-                     (format "diff --no-color --unified=0 HEAD -- %s"
-                             (shell-quote-argument rel-file)))
-                    (diff-minimap--git-diff
-                     (format "diff --no-color --unified=0 --cached -- %s"
-                             (shell-quote-argument rel-file))))))
-          (when output
-            (diff-minimap--parse-git-diff (split-string output "\n" t))))))))
-
-(defun diff-minimap--git-diff (command)
-  "Run git COMMAND and return stdout as string, or nil on failure."
+(defun diff-minimap--git-output (&rest args)
+  "Run git with ARGS and return its stdout as a string, or nil.
+ARGS is passed directly to `process-file', so file names containing
+spaces or shell metacharacters are safe."
   (ignore-errors
     (with-temp-buffer
-      (let ((exit-code (apply #'process-file "git" nil t nil
-                              (split-string-and-unquote command))))
+      (let ((exit-code (apply #'process-file "git" nil t nil args)))
         (unless (<= exit-code 1)
           (error "git command failed: exit %d" exit-code)))
       (let ((s (buffer-string)))
         (unless (string-empty-p s) s)))))
+
+(defun diff-minimap--git-toplevel ()
+  "Return the absolute git work tree root for `default-directory', or nil."
+  (let ((root (diff-minimap--git-output "rev-parse" "--show-toplevel")))
+    (when root
+      (string-trim root))))
+
+(defun diff-minimap--git-file-context (file)
+  "Return (ROOT . REL-FILE) for FILE in its git work tree, or nil.
+ROOT is the absolute work tree root and REL-FILE is relative to it."
+  (let* ((default-directory (file-name-directory file))
+         (root (diff-minimap--git-toplevel)))
+    (when root
+      (cons root (file-relative-name file root)))))
+
+(defun diff-minimap--collect-from-vc ()
+  "Collect diff data using git.
+Returns a list of (TYPE START-LINE END-LINE) or nil."
+  (when-let* ((file (buffer-file-name))
+              (context (diff-minimap--git-file-context file))
+              (root (car context))
+              (rel-file (cdr context)))
+    (let ((default-directory root))
+      (let ((output (or (diff-minimap--current-patch file)
+                        ;; Only fall back to the index when the live buffer
+                        ;; is not the source: otherwise reverted unsaved text
+                        ;; would keep showing staged changes.
+                        (unless (and diff-minimap-live-diff
+                                     (buffer-modified-p))
+                          (diff-minimap--git-output
+                           "diff" "--no-color" "--unified=0" "--cached"
+                           "--" rel-file)))))
+        (when output
+          (diff-minimap--parse-git-diff (split-string output "\n" t)))))))
+
+(defun diff-minimap--buffer-diff (rel-file)
+  "Return a unified diff between HEAD and the current buffer text.
+REL-FILE is relative to the git work tree root in `default-directory'.
+Returns nil outside a git work tree or when the buffer matches HEAD."
+  (when (diff-minimap--git-output "rev-parse" "--is-inside-work-tree")
+    (let* ((head (or (ignore-errors
+                       (diff-minimap--git-output
+                        "show" (concat "HEAD:" rel-file)))
+                     ""))
+           (content (save-restriction
+                      (widen)
+                      (buffer-substring-no-properties (point-min) (point-max))))
+           (old-file (make-temp-file "diff-minimap-old-"))
+           (new-file (make-temp-file "diff-minimap-new-")))
+      (unwind-protect
+          (progn
+            (let ((diff-minimap-live-diff nil))
+              (with-temp-file old-file
+                (insert head))
+              (with-temp-file new-file
+                (insert content)))
+            (diff-minimap--git-output
+             "diff" "--no-index" "--no-color" "--unified=0"
+             old-file new-file))
+        (ignore-errors (delete-file old-file))
+        (ignore-errors (delete-file new-file))))))
+
+(defun diff-minimap--current-patch (file)
+  "Return a unified diff for FILE, using the live buffer when appropriate.
+When `diff-minimap-live-diff' is non-nil and the current buffer is
+modified, compare HEAD with the buffer text.  Otherwise compare HEAD
+with the saved file."
+  (when-let* ((context (diff-minimap--git-file-context file))
+              (root (car context))
+              (rel-file (cdr context)))
+    (let ((default-directory root))
+      (if (and diff-minimap-live-diff
+               (buffer-modified-p))
+          (diff-minimap--buffer-diff rel-file)
+        (diff-minimap--git-output
+         "diff" "--no-color" "--unified=0" "HEAD" "--" rel-file)))))
 
 (defun diff-minimap--parse-git-diff (lines)
   "Parse git diff LINES and return list of (TYPE START END).
@@ -446,7 +556,7 @@ HUNK-NEW-START is the starting new-line number."
         (when current-type
           (push (list current-type current-start current-end) result))))
     (when (and has-minus (not has-plus))
-      (push (list 'removed hunk-new-start hunk-new-start) result))
+      (push (list 'removed (1+ hunk-new-start) (1+ hunk-new-start)) result))
     (nreverse result)))
 
 (defun diff-minimap--ediff-active-p ()
@@ -512,30 +622,32 @@ DIFF-DATA is a list of (TYPE START END) as returned by
 `diff-minimap--collect-diff-data'.  Removes old fringe overlays first."
   (diff-minimap--fringe-clear)
   (when diff-minimap-fringe-indicators
-    (dolist (change diff-data)
-      (let* ((ty (car change))
-             (start (nth 1 change))
-             (end (nth 2 change))
-             (bmp (pcase ty
-                    ('added 'diff-minimap--bmp-added)
-                    ('changed 'diff-minimap--bmp-changed)
-                    ('removed 'diff-minimap--bmp-removed)))
-             (face (pcase ty
-                     ('added 'diff-minimap-fringe-added)
-                     ('changed 'diff-minimap-fringe-changed)
-                     ('removed 'diff-minimap-fringe-removed))))
-        (when bmp
-          (save-excursion
-            (goto-char (point-min))
-            (forward-line (1- start))
-            (cl-loop for l from start to end
-                     do (let ((ov (make-overlay (line-beginning-position)
-                                                (1+ (line-beginning-position)))))
-                          (overlay-put ov 'before-string
-                                       (propertize " " 'display
-                                                   (diff-minimap--fringe-display bmp face)))
-                          (overlay-put ov 'diff-minimap-fringe t))
-                     (forward-line 1))))))))
+    (let ((last-line (diff-minimap--buffer-lines)))
+      (dolist (change diff-data)
+        (let* ((ty (car change))
+               (start (max 1 (min last-line (nth 1 change))))
+               (end (max 1 (min last-line (nth 2 change))))
+               (bmp (pcase ty
+                      ('added 'diff-minimap--bmp-added)
+                      ('changed 'diff-minimap--bmp-changed)
+                      ('removed 'diff-minimap--bmp-removed)))
+               (face (pcase ty
+                       ('added 'diff-minimap-fringe-added)
+                       ('changed 'diff-minimap-fringe-changed)
+                       ('removed 'diff-minimap-fringe-removed))))
+          (when bmp
+            (save-excursion
+              (goto-char (point-min))
+              (forward-line (1- start))
+              (cl-loop for l from start to end
+                       do (let* ((beg (line-beginning-position))
+                                 (ov-end (min (point-max) (1+ beg)))
+                                 (ov (make-overlay beg ov-end)))
+                            (overlay-put ov 'before-string
+                                         (propertize " " 'display
+                                                     (diff-minimap--fringe-display bmp face)))
+                            (overlay-put ov 'diff-minimap-fringe t))
+                       (forward-line 1)))))))))
 
 (defun diff-minimap--row->pos (row)
   "Return buffer position at the start of minimap ROW (0-indexed)."
@@ -888,8 +1000,8 @@ Viewport and cursor highlights are applied as overlays by
             (setq diff-minimap--last-tick (buffer-chars-modified-tick))
             (dolist (change diff-data)
               (let* ((ty (car change))
-                     (sl (nth 1 change))
-                     (el (nth 2 change))
+                     (sl (min total (nth 1 change)))
+                     (el (min total (nth 2 change)))
                      (fr (floor (/ (1- sl) scale)))
                      (lr (min (1- nrows) (floor (/ (1- el) scale)))))
                 (cl-loop for r from fr to lr
@@ -1011,12 +1123,16 @@ Clears the minimap when entering a buffer with no diff backend."
                  (cur-themes (and (boundp 'custom-enabled-themes)
                                   custom-enabled-themes))
                  (needs-full (or (not (eq tick diff-minimap--last-tick))
-                                  (and cur-nrows
-                                       (not (= cur-nrows
-                                               (or diff-minimap--last-nrows 0))))
-                                  (not (equal cur-themes
-                                              diff-minimap--last-themes)))))
-            (if needs-full
+                                 (and cur-nrows
+                                      (not (= cur-nrows
+                                              (or diff-minimap--last-nrows 0))))
+                                 (not (equal cur-themes
+                                             diff-minimap--last-themes))))
+                 (live-pending (and diff-minimap-live-diff
+                                    (with-current-buffer buf
+                                      (and (buffer-modified-p)
+                                           (timerp diff-minimap--live-diff-timer))))))
+            (if (and needs-full (not live-pending))
                 (diff-minimap--render)
               (diff-minimap--update-viewport)))))))
 
@@ -1122,28 +1238,41 @@ it until the button is released."
         (recenter 0)
         (diff-minimap-show-hunk)))))
 
+(defun diff-minimap--hunk-last-line (start count)
+  "Return the last new-file line in a hunk starting at START with COUNT lines.
+A zero-length hunk covers the insertion point after START."
+  (if (zerop count)
+      (1+ start)
+    (+ start (1- count))))
+
 (defun diff-minimap--extract-hunk-from-patch (patch target-line)
   "Extract from unified diff PATCH the hunk covering TARGET-LINE.
 Returns the hunk text as a string, or nil if not found."
   (catch 'done
     (let ((lines (split-string patch "\n"))
           (result nil)
-          (new-line nil)
-          (hunk-start nil))
+          (hunk-start nil)
+          (hunk-count nil))
       (dolist (line lines)
         (cond
-         ((string-match "^@@ -\\([0-9]+\\),?\\([0-9]*\\) \\+\\([0-9]+\\),?\\([0-9]*\\) @@" line)
-          (when (and hunk-start (<= hunk-start target-line (max hunk-start (1- new-line))))
-            (throw 'done (string-join (nreverse result) "\n")))
+         ((string-match
+           "^@@ -\\([0-9]+\\)\\(?:,\\([0-9]+\\)\\)? \\+\\([0-9]+\\)\\(?:,\\([0-9]+\\)\\)? @@"
+           line)
+          (when hunk-start
+            (when (<= hunk-start target-line
+                      (diff-minimap--hunk-last-line hunk-start hunk-count))
+              (throw 'done (string-join (nreverse result) "\n"))))
           (setq hunk-start (string-to-number (match-string 3 line))
-                new-line hunk-start
+                hunk-count (if (match-string 4 line)
+                               (string-to-number (match-string 4 line))
+                             1)
                 result (list line)))
-         (new-line
-          (push line result)
-          (when (string-match "^\\([+ ]\\)" line)
-            (cl-incf new-line)))))
-      (when (and hunk-start (<= hunk-start target-line (max hunk-start (1- new-line))))
-        (string-join (nreverse result) "\n")))))
+         (hunk-start
+          (push line result))))
+      (when hunk-start
+        (when (<= hunk-start target-line
+                  (diff-minimap--hunk-last-line hunk-start hunk-count))
+          (string-join (nreverse result) "\n"))))))
 
 (defun diff-minimap--extract-sub-hunk (hunk-text target-line)
   "From unified diff HUNK-TEXT, extract only the changes (+) and deletions (-)
@@ -1191,74 +1320,215 @@ Context lines (starting with ' ') are strictly excluded."
           (let ((diff-lines (cl-remove-if-not (lambda (l) (string-match-p "^[-+]" l)) body)))
             (string-join (cons header diff-lines) "\n")))))))
 
-(defun diff-minimap--show-hunk-overlay (hunk target-line)
-  "Create a hunk overlay for HUNK at TARGET-LINE.
-HUNK is a list (TYPE START END).  Return the overlay, or nil when no
-patch could be produced — e.g. the buffer visits no file, or git
-produced no diff for the hunk (the inline preview is git-only)."
+(defun diff-minimap--parse-inline-hunk (narrowed)
+  "Return (OLD-LINES NEW-START NEW-COUNT) parsed from NARROWED.
+NARROWED is a unified diff sub-hunk as returned by
+`diff-minimap--extract-sub-hunk' — a header followed only by
+removed and added lines."
+  (let ((lines (split-string narrowed "\n" t))
+        (old-lines nil)
+        (new-start 1)
+        (new-count 1))
+    (when (and lines
+               (string-match
+                "^@@ -[0-9]+\\(?:,[0-9]+\\)? \\+\\([0-9]+\\)\\(?:,\\([0-9]+\\)\\)? @@"
+                (car lines)))
+      (setq new-start (string-to-number (match-string 1 (car lines)))
+            new-count (if (match-string 2 (car lines))
+                          (string-to-number (match-string 2 (car lines)))
+                        1)))
+    (dolist (line (cdr lines))
+      (when (and (> (length line) 0)
+                 (eq (aref line 0) ?-))
+        (push (substring line 1) old-lines)))
+    (list (nreverse old-lines) new-start new-count)))
+
+(defun diff-minimap--delete-hunk-overlay (ov)
+  "Delete inline hunk overlay OV and release its saved marker."
+  (when-let* ((marker (overlay-get ov 'diff-minimap-hunk-marker)))
+    (when (markerp marker)
+      (set-marker marker nil)))
+  (delete-overlay ov))
+
+(defun diff-minimap--remove-hunk-overlays ()
+  "Remove all inline diff hunk overlays from the current buffer."
+  (dolist (ov (overlays-in (point-min) (point-max)))
+    (when (overlay-get ov 'diff-minimap-hunk)
+      (diff-minimap--delete-hunk-overlay ov))))
+
+(defun diff-minimap--show-hunk-overlay (hunk target-line &optional full-patch)
+  "Create an editable inline overlay for HUNK at TARGET-LINE.
+HUNK is a list (TYPE START END).  Removed lines are rendered as
+read-only virtual text above the hunk; the added/changed lines stay
+in the buffer as ordinary editable text and are highlighted.
+FULL-PATCH, when non-nil, is a precomputed unified diff to use instead
+of running git again.  Return the overlay, or nil when no patch could
+be produced — e.g. the buffer visits no file, or git produced no diff
+for the hunk (the inline diff is git-only)."
   (when-let* ((file (buffer-file-name))
-              (start (nth 1 hunk))
-              (end (nth 2 hunk))
-              (default-directory (file-name-directory file))
-              (rel-file (file-relative-name file))
-              (full-patch (diff-minimap--git-diff
-                           (format "diff --no-color --unified=0 HEAD -- %s"
-                                   (shell-quote-argument rel-file))))
-              (patch (diff-minimap--extract-hunk-from-patch full-patch start))
-              (narrowed (diff-minimap--extract-sub-hunk patch target-line)))
-    (let ((fontified (with-temp-buffer
-                       (insert narrowed)
-                       (unless (bolp) (insert "\n"))
-                       (diff-mode)
-                       (font-lock-ensure)
-                       (buffer-string))))
-      (save-excursion
-        (goto-char (point-min))
-        (forward-line (1- start))
-        (let* ((ov-start (point))
-               (ov-end (let ((len (1+ (- end start))))
-                         (if (> len 0)
-                             (progn (forward-line len) (point))
-                           (point))))
-               (ov (make-overlay ov-start ov-end)))
-          (overlay-put ov 'diff-minimap-hunk t)
-          (if (= ov-start ov-end)
-              (overlay-put ov 'before-string fontified)
-            (overlay-put ov 'display fontified))
-          (overlay-put ov 'face 'diff-minimap-hunk-region)
-          (overlay-put ov 'priority 100)
-          ov)))))
+              (start (nth 1 hunk)))
+    (let* ((full-patch (or full-patch (diff-minimap--current-patch file)))
+           (patch (and full-patch
+                       (diff-minimap--extract-hunk-from-patch full-patch start)))
+           (narrowed (and patch
+                          (diff-minimap--extract-sub-hunk patch target-line))))
+      (when narrowed
+        (let* ((parsed (diff-minimap--parse-inline-hunk narrowed))
+               (old-lines (nth 0 parsed))
+               (new-start (nth 1 parsed))
+               (new-count (nth 2 parsed))
+               (start-line (max 1 (if (zerop new-count)
+                                      (1+ new-start)
+                                    new-start))))
+          (save-excursion
+            (goto-char (point-min))
+            (forward-line (1- start-line))
+            (let* ((ov-start (point))
+                   (ov-end (if (> new-count 0)
+                               (progn (forward-line new-count) (point))
+                             ov-start))
+                   (ov (make-overlay ov-start ov-end))
+                   (hunk-marker (save-excursion
+                                  (goto-char (point-min))
+                                  (forward-line (1- (max 1 start)))
+                                  (copy-marker (point)))))
+              (overlay-put ov 'diff-minimap-hunk t)
+              (overlay-put ov 'diff-minimap-hunk-marker hunk-marker)
+              (when old-lines
+                (overlay-put ov 'before-string
+                             (mapconcat
+                              (lambda (line)
+                                (propertize (concat "-" line "\n")
+                                            'face 'diff-minimap-inline-removed))
+                              old-lines "")))
+              (when (> new-count 0)
+                (overlay-put ov 'face (if old-lines
+                                          'diff-minimap-inline-changed
+                                        'diff-minimap-inline-added)))
+              (overlay-put ov 'priority 100)
+              ov)))))))
+
+(defun diff-minimap--hunk-overlay-at-line (line)
+  "Return the inline hunk overlay whose start line is LINE."
+  (cl-find-if (lambda (ov)
+                (and (overlay-get ov 'diff-minimap-hunk)
+                     (= (line-number-at-pos (overlay-start ov)) line)))
+              (overlays-in (point-min) (point-max))))
+
+(defun diff-minimap--show-all-inline-hunks ()
+  "Ensure every diff hunk in the current buffer has an inline overlay.
+Existing inline hunks are left alone; missing ones are added."
+  (setq diff-minimap--inline-active t)
+  (let* ((data (diff-minimap--collect-diff-data))
+         (full-patch (and data
+                          (buffer-file-name)
+                          (diff-minimap--current-patch (buffer-file-name)))))
+    (dolist (hunk data)
+      (unless (diff-minimap--hunk-overlay-at-line (nth 1 hunk))
+        (ignore-errors
+          (diff-minimap--show-hunk-overlay hunk (nth 1 hunk) full-patch))))))
+
+(defun diff-minimap--refresh-live-diff ()
+  "Recompute inline hunks and the minimap from the current buffer text."
+  (when (and (bound-and-true-p diff-minimap-mode)
+             diff-minimap-live-diff
+             (buffer-file-name)
+             (not (string-prefix-p " " (buffer-name)))
+             (not diff-minimap--ediff-control-buffer))
+    (when diff-minimap--inline-active
+      (diff-minimap--remove-hunk-overlays)
+      (diff-minimap--show-all-inline-hunks))
+    (when (and (get-buffer-window diff-minimap--buffer-name)
+               (eq (current-buffer)
+                   (window-buffer (selected-window))))
+      (diff-minimap--render))))
+
+(defun diff-minimap--after-change (&rest _)
+  "Schedule a live diff refresh after the buffer text changes."
+  (when (and (bound-and-true-p diff-minimap-mode)
+             diff-minimap-live-diff
+             (buffer-file-name)
+             (not (string-prefix-p " " (buffer-name)))
+             (not diff-minimap--ediff-control-buffer))
+    (let ((buf (current-buffer)))
+      (when (timerp diff-minimap--live-diff-timer)
+        (cancel-timer diff-minimap--live-diff-timer))
+      (setq diff-minimap--live-diff-timer
+            (run-with-idle-timer
+             diff-minimap-live-diff-delay nil
+             (lambda ()
+               (when (buffer-live-p buf)
+                 (with-current-buffer buf
+                   (setq diff-minimap--live-diff-timer nil)
+                   (diff-minimap--refresh-live-diff)))))))))
 
 (defun diff-minimap-show-all-hunks ()
-  "Show or hide all diff hunk previews in the current buffer.
+  "Show or hide all editable inline diff hunks in the current buffer.
 Toggles: if any hunk overlays exist, remove them all. Otherwise, show all."
   (interactive)
   (let ((ovs (cl-remove-if-not (lambda (ov) (overlay-get ov 'diff-minimap-hunk))
                                (overlays-in (point-min) (point-max)))))
     (if ovs
-        (dolist (ov ovs) (delete-overlay ov))
-      (let ((data (diff-minimap--collect-diff-data)))
-        (dolist (hunk data)
-          (diff-minimap--show-hunk-overlay hunk (nth 1 hunk)))))))
+        (progn
+          (diff-minimap--remove-hunk-overlays)
+          (setq diff-minimap--inline-active nil))
+      (diff-minimap--show-all-inline-hunks))))
 
 (defun diff-minimap-show-hunk ()
-  "Show the diff hunk at point as an inline overlay.
-Toggle: if a hunk overlay is already displayed at point, remove it."
+  "Show or hide the diff hunk at point as an editable inline diff.
+Removed lines are read-only virtual text; added/changed lines stay in
+the buffer and can be edited normally.  Other inline hunks are left
+alone; use `diff-minimap-show-all-hunks' to toggle every hunk."
   (interactive)
   (let* ((line (line-number-at-pos))
          ;; Find ANY hunk overlay at point (including batch-created ones)
          (hunk-ov (cl-find-if (lambda (ov) (overlay-get ov 'diff-minimap-hunk))
                               (overlays-at (point)))))
     (if hunk-ov
-        (delete-overlay hunk-ov)
+        (progn
+          (diff-minimap--delete-hunk-overlay hunk-ov)
+          (unless (cl-some (lambda (ov) (overlay-get ov 'diff-minimap-hunk))
+                           (overlays-in (point-min) (point-max)))
+            (setq diff-minimap--inline-active nil)))
       (unless (buffer-file-name)
         (user-error "Buffer has no file"))
       (let* ((data (diff-minimap--collect-diff-data))
              (hunk (cl-find-if (lambda (h) (<= (nth 1 h) line (max (nth 1 h) (nth 2 h)))) data)))
         (unless hunk
           (user-error "No diff hunk at line %d" line))
-        (unless (diff-minimap--show-hunk-overlay hunk line)
-          (user-error "No git diff available to preview for this hunk"))))))
+        (if (diff-minimap--show-hunk-overlay hunk line)
+            (setq diff-minimap--inline-active t)
+          (user-error "No git diff available to show for this hunk"))))))
+
+(defun diff-minimap--refresh-inline-hunk ()
+  "Recompute inline hunk overlays after saving the current buffer.
+Each overlay records a marker at its hunk start, so it follows edits.
+Overlays whose hunk no longer exists in the new diff are dropped."
+  (let ((markers nil)
+        (found nil))
+    (dolist (ov (overlays-in (point-min) (point-max)))
+      (when (overlay-get ov 'diff-minimap-hunk)
+        (setq found t)
+        (let ((marker (overlay-get ov 'diff-minimap-hunk-marker)))
+          (when (markerp marker)
+            (push marker markers)))
+        (delete-overlay ov)))
+    (when found
+      (let* ((data (diff-minimap--collect-diff-data))
+             (full-patch (and data
+                              (buffer-file-name)
+                              (diff-minimap--current-patch (buffer-file-name)))))
+        (dolist (marker markers)
+          (when (marker-position marker)
+            (let* ((line (line-number-at-pos marker))
+                   (hunk (cl-find-if
+                          (lambda (h)
+                            (<= (nth 1 h) line (max (nth 1 h) (nth 2 h))))
+                          data)))
+              (when hunk
+                (ignore-errors
+                  (diff-minimap--show-hunk-overlay hunk (nth 1 hunk) full-patch)))))
+          (set-marker marker nil))))))
 
 ;;;###autoload
 (defun diff-minimap-toggle ()
@@ -1299,28 +1569,18 @@ Toggle: if a hunk overlay is already displayed at point, remove it."
           (setq-local mode-line-format nil)
           (setq-local header-line-format nil))
         (diff-minimap--render)
-        (diff-minimap-mode 1)))))
-
-;;;###autoload
-(defun diff-minimap-toggle-with-demap ()
-  "Toggle this minimap and `demap' together, one on each side.
-Opens both if neither is visible; closes both if either is.
-Demap should be configured on the right, this minimap on the left
-\(via `diff-minimap-side') to match the VSCode layout.
-When `demap' is absent, behaves as `diff-minimap-toggle'."
-  (interactive)
-  (if (not (fboundp 'demap-open))
-      (diff-minimap-toggle)
-    (let* ((mm-buf (get-buffer diff-minimap--buffer-name))
-           (demap-buf (get-buffer "*Minimap*"))
-           (mm-win (and mm-buf (get-buffer-window mm-buf)))
-           (demap-win (and demap-buf (get-buffer-window demap-buf))))
-      (if (or mm-win demap-win)
-          (progn
-            (when mm-win (diff-minimap-toggle))
-            (when demap-win (demap-close)))
-        (diff-minimap-toggle)
-        (demap-open)))))
+        (diff-minimap-mode 1)
+        (when (and diff-minimap-inline-preview
+                   (not diff-minimap--ediff-control-buffer))
+          (let ((buf (current-buffer)))
+            (run-with-timer
+             0 nil
+             (lambda ()
+               (when (and (buffer-live-p buf)
+                          (with-current-buffer buf
+                            (bound-and-true-p diff-minimap-mode)))
+                 (with-current-buffer buf
+                   (diff-minimap--show-all-inline-hunks)))))))))))
 
 ;;;###autoload
 (defun diff-minimap-ediff-setup ()
@@ -1444,6 +1704,11 @@ Uses the configured `diff-minimap-diff-backend' to find hunks."
               (end (nth 2 next)))
           (goto-char (point-min))
           (forward-line (1- start))
+          (when (and (bound-and-true-p diff-minimap-mode)
+                     diff-minimap-inline-preview
+                     (not (diff-minimap--hunk-overlay-at-line (nth 1 next))))
+            (ignore-errors
+              (diff-minimap--show-hunk-overlay next (nth 1 next))))
           (recenter)
           (diff-minimap--pulse-range start end))
       (user-error "No next hunk"))))
@@ -1465,6 +1730,11 @@ Uses the configured `diff-minimap-diff-backend' to find hunks."
               (end (nth 2 prev)))
           (goto-char (point-min))
           (forward-line (1- start))
+          (when (and (bound-and-true-p diff-minimap-mode)
+                     diff-minimap-inline-preview
+                     (not (diff-minimap--hunk-overlay-at-line (nth 1 prev))))
+            (ignore-errors
+              (diff-minimap--show-hunk-overlay prev (nth 1 prev))))
           (recenter)
           (diff-minimap--pulse-range start end))
       (user-error "No previous hunk"))))
@@ -1530,7 +1800,8 @@ Bound keys:
   "Global minor mode keeping the diff minimap in sync.
 When active, the minimap follows the selected buffer and updates on
 scroll, edit, save, buffer switch, and hunk navigation — no need to
-toggle per buffer.
+toggle per buffer.  When `diff-minimap-inline-preview' is non-nil,
+opening the minimap and hunk navigation show editable inline diffs.
 \\{diff-minimap-mode-map}"
   :lighter " DMap"
   :global t
@@ -1538,7 +1809,9 @@ toggle per buffer.
   (if diff-minimap-mode
       (progn
         (add-hook 'post-command-hook #'diff-minimap--post-command)
+        (add-hook 'after-change-functions #'diff-minimap--after-change)
         (add-hook 'after-save-hook #'diff-minimap--after-save)
+        (add-hook 'after-save-hook #'diff-minimap--refresh-inline-hunk)
         (add-hook 'isearch-update-post-hook #'diff-minimap--search-update)
         (add-hook 'isearch-mode-end-hook #'diff-minimap--search-clear)
         (advice-add 'vc-diff :before #'diff-minimap--before-vc-diff)
@@ -1550,7 +1823,9 @@ toggle per buffer.
           (with-eval-after-load 'ediff
             (diff-minimap--ensure-ediff-advice))))
     (remove-hook 'post-command-hook #'diff-minimap--post-command)
+    (remove-hook 'after-change-functions #'diff-minimap--after-change)
     (remove-hook 'after-save-hook #'diff-minimap--after-save)
+    (remove-hook 'after-save-hook #'diff-minimap--refresh-inline-hunk)
     (remove-hook 'isearch-update-post-hook #'diff-minimap--search-update)
     (remove-hook 'isearch-mode-end-hook #'diff-minimap--search-clear)
     (remove-hook 'ediff-startup-hook #'diff-minimap-ediff-setup)
@@ -1558,10 +1833,19 @@ toggle per buffer.
     (advice-remove 'vc-diff #'diff-minimap--before-vc-diff)
     (advice-remove 'vc-diff #'diff-minimap--after-vc-diff)
     (diff-minimap--remove-ediff-advice)
+    (dolist (buf (buffer-list))
+      (with-current-buffer buf
+        (when (timerp diff-minimap--live-diff-timer)
+          (cancel-timer diff-minimap--live-diff-timer)
+          (setq diff-minimap--live-diff-timer nil))
+        (diff-minimap--remove-hunk-overlays)
+        (setq diff-minimap--inline-active nil)))
     (setq diff-minimap--last-buffer nil)))
 
-(define-key vc-prefix-map (kbd "m") #'diff-minimap-toggle)
-(define-key vc-prefix-map (kbd "M") #'diff-minimap-toggle-with-demap)
+;;
+;; Do not bind `C-x v m' or `C-x v M' here: they are stock VC keys
+;; (`vc-merge' and the `vc-diff-mergebase'/`vc-log-mergebase' prefix).
+;; Toggle the minimap from `M-x diff-minimap-toggle' or bind it yourself.
 (define-key vc-prefix-map (kbd "]") #'diff-minimap-next-hunk)
 (define-key vc-prefix-map (kbd "[") #'diff-minimap-previous-hunk)
 

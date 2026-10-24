@@ -5,7 +5,7 @@
 #+options: ':t toc:2 num:nil
 #+startup: showall
 
-A VSCode-style minimap for Emacs that colour-codes every line by its diff status (added, changed, removed) while also marking the visible viewport and current cursor row.  Can use =diff-hl= overlays or git directly as the diff-data source.  Optionally paints coloured fringe indicators in the source buffer.  Can be used standalone or alongside =demap= for a two-panel minimap layout.
+A VSCode-style minimap for Emacs that colour-codes every line by its diff status (added, changed, removed) while also marking the visible viewport and current cursor row.  Can use =diff-hl= overlays or git directly as the diff-data source.  Optionally paints coloured fringe indicators in the source buffer.
 
 * Installation
 
@@ -25,9 +25,11 @@ Or with =use-package= (no =:ensure= since it is a local package):
 
 * Usage
 
-~M-x diff-minimap-toggle~ or ~C-x v m~ opens the minimap in a side window.  The same command closes it.
+~M-x diff-minimap-toggle~ opens the minimap in a side window.  The same command closes it.  The toggle is not bound to a key by default, so loading the package leaves stock VC keys such as =C-x v m= (=vc-merge=) alone; bind it in your own configuration if you want a shortcut.
 
 The minor mode =diff-minimap-mode= is automatically activated when the minimap opens and deactivated when it closes.  It is a global mode — once toggled on, the minimap follows the selected buffer automatically, re-rendering for each file that has a diff backend available, and clearing when entering Dired or other buffers without changes.
+
+Opening the minimap shows every diff hunk inline (when =diff-minimap-inline-preview= is non-nil): removed lines are read-only virtual text, while the added/changed lines remain ordinary buffer text you can edit in place.  The inline views update live as you type, and =C-x v ]= / =C-x v [= step between the hunks.
 
 ** Mouse navigation
 
@@ -39,40 +41,51 @@ buffer directly from it:
 | Click (=mouse-1=)         | Jump the source buffer to the clicked row                    |
 | Drag (=mouse-1=)          | Scrub the source view continuously while the button is held  |
 | Wheel / two-finger scroll | Scroll the source buffer (=diff-minimap-wheel-scroll-lines=) |
-| Right-click (=mouse-3=)   | Jump to the row and show its diff hunk preview               |
+| Right-click (=mouse-3=)   | Jump to the row and show its editable inline diff            |
 
 ** Hunk navigation
 
 ~diff-minimap-next-hunk~ and ~diff-minimap-previous-hunk~ jump between
 diff hunks using the configured backend (the full hunk range pulses on
-arrival).  Two sets of keybindings are available when the minimap is
-open:
+arrival).  They are bound globally to =C-x v ]= and =C-x v [=.
 
 | Keybinding | Command                          |
 |------------+----------------------------------|
 | =C-x v ]=  | =diff-minimap-next-hunk=         |
 | =C-x v [=  | =diff-minimap-previous-hunk=     |
-| =M-]=      | =diff-minimap-next-hunk=         |
-| =M-[=      | =diff-minimap-previous-hunk=     |
 | =C-c p=    | =diff-minimap-show-hunk=         |
 
-The =M-]= and =M-[= bindings are in =diff-minimap-mode-map= so they are
-only active while the minimap minor mode is enabled.
+When =diff-minimap-mode= is active and =diff-minimap-inline-preview= is
+non-nil (the default), opening the minimap shows every hunk inline;
+each jump ensures the destination hunk is shown too, without removing
+the others.  =C-c p= toggles the hunk at point.
 
-** Inline diff preview
+** Inline diff editing
 
-~diff-minimap-show-hunk= (=C-c p=) renders the `git diff` for the hunk
-at point as an inline overlay directly in the source buffer, highlighted
-via =diff-mode= font-lock.  The overlay appears above the hunk as virtual
-text — it never modifies the underlying buffer.
+~diff-minimap-show-hunk= (=C-c p=) shows the change at point as an
+editable inline diff.  Removed lines are rendered as read-only virtual
+text with the =diff-minimap-inline-removed= face; the added/changed
+lines are the real buffer text, highlighted with
+=diff-minimap-inline-added= / =diff-minimap-inline-changed=, and can be
+edited normally.  The inline faces carry explicit light/dark red, green,
+and amber backgrounds rather than inheriting the built-in =diff-*=
+faces, which some themes leave unspecified.
 
 Only the specific change group (the contiguous =-= /=+= block) containing
-point is shown, without surrounding context or unrelated changes from the
-same git hunk.  Call the command again to dismiss the overlay, or simply
-move point outside the hunk range and it disappears automatically.
+point is shown per hunk, without surrounding context or unrelated changes
+from the same git hunk.  All hunks are shown when the minimap opens;
+=C-c p= toggles the hunk at point without clearing the others, and
+=C-c P= shows or hides every hunk in the buffer at once.
+
+Inline hunks follow the text with markers.  When =diff-minimap-live-diff=
+is non-nil (the default), editing recomputes the diff from the unsaved
+buffer text after =diff-minimap-live-diff-delay= seconds of idle time, so
+the minimap and inline hunks update as you type.  Reverting the text to
+its =HEAD= state removes the inline hunks without saving.  Set
+=diff-minimap-live-diff= to =nil= to update only on save and navigation.
 
 You can also right-click (=mouse-3=) on a minimap row to jump to the
-source line and show its diff preview in one step.
+source line and show its editable inline diff in one step.
 
 ** Ediff integration
 
@@ -90,15 +103,6 @@ panel.
   highlights.
 
 The minimap automatically hides when the Ediff session is closed.
-
-* Demap integration
-
-If you also use the =demap= minimap package, the ~diff-minimap-toggle-with-demap~ command opens demap on the right and diff-minimap on the left (set =diff-minimap-side= to ='left= beforehand) for a VSCode-like split: demap shows a zoomed-out code overview, diff-minimap shows the colour-coded diff ribbon.
-
-#+begin_src emacs-lisp
-(setq diff-minimap-side 'left)
-;; then: M-x diff-minimap-toggle-with-demap
-#+end_src
 
 * Viewport styles
 
@@ -133,6 +137,9 @@ Set it in your config:
 | =diff-minimap-search-highlights= | t            | Show isearch matches as yellow bars in the minimap           |
 | =diff-minimap-colour-source=     | 'diff-hl     | Prefer =diff-hl= fringe faces or built-in =diff= faces       |
 | =diff-minimap-wheel-scroll-lines= | 3           | Source lines scrolled per wheel notch over the minimap       |
+| =diff-minimap-inline-preview=    | t           | Show editable inline diffs on open and navigation            |
+| =diff-minimap-live-diff=         | t           | Recompute the diff from unsaved buffer text while typing     |
+| =diff-minimap-live-diff-delay=   | 0.2         | Idle seconds before a live diff refresh                      |
 
 See the [[#stipple-patterns][stipple pattern table]] below for predefined values.
 
