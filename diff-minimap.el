@@ -241,6 +241,11 @@ text to its original state removes the inline hunks without saving."
 (defvar-local diff-minimap--inline-active nil
   "Whether this buffer should keep inline hunks in sync with edits.")
 
+(defvar diff-minimap--sidebar-intended nil
+  "Whether the user wants the minimap sidebar shown.
+The sidebar is hidden for buffers without local changes while this
+remains non-nil, so switching back to a changed file restores it.")
+
 (defvar-local diff-minimap--last-nrows nil
   "Minimap row count at last full render — for detecting window resizes.")
 
@@ -271,9 +276,9 @@ text to its original state removes the inline hunks without saving."
 ;; Cached face colours — recomputed in `diff-minimap--cache-faces'.
 (defvar diff-minimap--norm-bg "#1a1a1a")
 (defvar diff-minimap--view-bg "#404060")
-(defvar diff-minimap--ins-bg  "#006600")
-(defvar diff-minimap--chg-bg  "#666600")
-(defvar diff-minimap--del-bg  "#660000")
+(defvar diff-minimap--ins-bg  "#2ea043")
+(defvar diff-minimap--chg-bg  "#d29922")
+(defvar diff-minimap--del-bg  "#da3633")
 (defvar diff-minimap--cur-bg  "#00ffff")
 
 ;; Stipple bitmap patterns for the `stipple' viewport style.
@@ -335,25 +340,30 @@ Respects `diff-minimap-colour-source' for diff highlight priority."
   (let ((fbg (lambda (f attr d)
                (if (facep f)
                    (let ((v (face-attribute f attr nil t)))
-                     (if (or (not v) (eq v 'unspecified) (not (stringp v)))
-                         d v))
+                     (if (and (stringp v) (color-name-to-rgb v))
+                         v d))
                  d))))
-    (setq diff-minimap--norm-bg (funcall fbg 'fringe :background "#1a1a1a"))
+    (setq diff-minimap--norm-bg
+          (funcall fbg 'default :background
+                   (let ((bg (frame-parameter nil 'background-color)))
+                     (if (and (stringp bg) (color-name-to-rgb bg))
+                         bg
+                       "#1a1a1a"))))
     (setq diff-minimap--view-bg (funcall fbg 'region :background "#404060"))
     (if (eq diff-minimap-colour-source 'diff-hl)
         (progn
           (setq diff-minimap--ins-bg (funcall fbg 'diff-hl-insert :background
-                                              (funcall fbg 'diff-added :background "#006600")))
+                                              (funcall fbg 'diff-added :background "#2ea043")))
           (setq diff-minimap--chg-bg (funcall fbg 'diff-hl-change :background
-                                              (funcall fbg 'diff-changed :background "#666600")))
+                                              (funcall fbg 'diff-changed :background "#d29922")))
           (setq diff-minimap--del-bg (funcall fbg 'diff-hl-delete :background
-                                              (funcall fbg 'diff-removed :background "#660000"))))
+                                              (funcall fbg 'diff-removed :background "#da3633"))))
       (setq diff-minimap--ins-bg  (funcall fbg 'diff-added :background
-                                           (funcall fbg 'diff-hl-insert :background "#006600")))
+                                           (funcall fbg 'diff-hl-insert :background "#2ea043")))
       (setq diff-minimap--chg-bg  (funcall fbg 'diff-changed :background
-                                           (funcall fbg 'diff-hl-change :background "#666600")))
+                                           (funcall fbg 'diff-hl-change :background "#d29922")))
       (setq diff-minimap--del-bg  (funcall fbg 'diff-removed :background
-                                           (funcall fbg 'diff-hl-delete :background "#660000"))))
+                                           (funcall fbg 'diff-hl-delete :background "#da3633"))))
     (setq diff-minimap--cur-bg  (funcall fbg 'cursor :background "#00ffff"))
     (when diff-minimap-fringe-indicators
       (set-face-foreground 'diff-minimap-fringe-added diff-minimap--ins-bg nil)
@@ -935,10 +945,31 @@ Each entry in DIFF-A/DIFF-B is (FACE-OR-TYPE VIRT-START VIRT-END)."
       (list tot-virt (nreverse diff-A) (nreverse diff-B)))))
 
 
-(defun diff-minimap--render ()
+(defun diff-minimap--minimap-row-height (win)
+  "Return the pixel height of one minimap row in WIN, or nil."
+  (when (and win (window-live-p win))
+    (or (let ((lh (ignore-errors
+                    (window-line-height (window-start win) win))))
+          (and lh (numberp (car lh)) (> (car lh) 0) (car lh)))
+        (with-current-buffer (window-buffer win)
+          (let ((inhibit-read-only t)
+                (inhibit-modification-hooks t))
+            (unless (> (buffer-size) 0)
+              (insert " \n"))
+            (let* ((size (ignore-errors
+                           (window-text-pixel-size
+                            win (point-min)
+                            (min (point-max) (1+ (line-end-position)))
+                            nil nil)))
+                   (height (and size (cdr size))))
+              (and (numberp height) (> height 0) height)))))))
+
+(defun diff-minimap--render (&optional window)
   "Render the full minimap content with diff colours only.
 Viewport and cursor highlights are applied as overlays by
-`diff-minimap--update-viewport'."
+`diff-minimap--update-viewport'.  Optional WINDOW is the minimap
+window to use when it has just been created and is not yet
+registered with `get-buffer-window'."
   (diff-minimap--cache-faces)
   (let* ((mm-buf (get-buffer-create diff-minimap--buffer-name))
          (ediff-active (and diff-minimap--ediff-control-buffer
@@ -966,17 +997,25 @@ Viewport and cursor highlights are applied as overlays by
              (diff-A (when dual-col (nth 1 ediff-dual)))
              (diff-B (when dual-col (nth 2 ediff-dual)))
              (src-win (if dual-col (get-buffer-window a-buf 0) (get-buffer-window this-buf 0)))
-             (mm-win (get-buffer-window mm-buf 0))
+             (mm-win (or window (get-buffer-window mm-buf 0)))
              (actual-width (let ((base-w (if mm-win (window-width mm-win) diff-minimap-width)))
                              (if (and (numberp diff-minimap-font-scale) (> diff-minimap-font-scale 0))
                                  (ceiling (/ (float base-w) diff-minimap-font-scale))
                                base-w)))
              (nrows (max 1
-                         (let ((row-px (ceiling (* (frame-char-height)
-                                                   diff-minimap-font-scale))))
-                           (floor (/ (window-body-height
-                                      (or mm-win src-win (selected-window)) t)
-                                     row-px)))))
+                         (if mm-win
+                             (let ((row-px (diff-minimap--minimap-row-height mm-win))
+                                   (body-px (window-body-height mm-win t)))
+                               (if (and row-px (> body-px 0))
+                                   (floor (/ body-px row-px))
+                                 (let ((row-px (ceiling (* (frame-char-height)
+                                                           diff-minimap-font-scale))))
+                                   (floor (/ body-px row-px)))))
+                           (let ((row-px (ceiling (* (frame-char-height)
+                                                     diff-minimap-font-scale))))
+                             (floor (/ (window-body-height
+                                        (or src-win (selected-window)) t)
+                                       row-px))))))
              (scale (/ (float total) nrows))
              (row-diff (make-vector nrows nil))
              (row-diff-A (when dual-col (make-vector nrows nil)))
@@ -1076,65 +1115,77 @@ Viewport and cursor highlights are applied as overlays by
 
 (defun diff-minimap--post-command ()
   "Immediate post-command-hook: update viewport/cursor overlays or full re-render.
-Detects buffer switches and re-renders for the new buffer automatically.
-Clears the minimap when entering a buffer with no diff backend."
-  (when (get-buffer-window diff-minimap--buffer-name 0)
+Detects buffer switches, shows the sidebar only for buffers with local
+changes, and clears it when entering a buffer without changes or a diff
+backend."
+  (when (or (get-buffer-window diff-minimap--buffer-name 0)
+            diff-minimap--sidebar-intended)
     (let ((buf (current-buffer))
           (mm-buf (get-buffer diff-minimap--buffer-name)))
-      (when mm-buf
-        (when (and diff-minimap--ediff-control-buffer
-                   (buffer-live-p diff-minimap--ediff-control-buffer)
-                   (or (eq buf diff-minimap--ediff-control-buffer)
-                       (with-current-buffer diff-minimap--ediff-control-buffer
-                         (or (eq buf (bound-and-true-p ediff-buffer-A))
-                             (eq buf (bound-and-true-p ediff-buffer-B))
-                             (eq buf (bound-and-true-p ediff-buffer-C))))))
-          (setq buf diff-minimap--ediff-control-buffer))
-        (unless (eq buf diff-minimap--last-buffer)
-          (setq diff-minimap--last-buffer buf)
-          (if (diff-minimap--backend-available-p)
-              (progn
-                (diff-minimap--render)
-                (run-with-timer
-                 0.2 nil
-                 (lambda ()
-                   (when (and (buffer-live-p buf)
-                              (eq diff-minimap--last-buffer buf))
-                     (with-current-buffer buf
-                       (diff-minimap--render))))))
-            (with-current-buffer buf
-              (diff-minimap--fringe-clear))
-            (with-current-buffer mm-buf
-              (let ((inhibit-read-only t))
-                (erase-buffer)
-                (diff-minimap--clear-overlays))))))
-        (when (and (diff-minimap--backend-available-p)
-                   (eq buf diff-minimap--last-buffer))
-          (let* ((tick (with-current-buffer buf
-                         (buffer-chars-modified-tick)))
-                  (src-win (get-buffer-window buf 0))
-                   (cur-nrows (let ((mm-win (get-buffer-window mm-buf 0)))
-                                (when mm-win
-                                  (let ((row-px (ceiling
-                                                 (* (frame-char-height)
-                                                    diff-minimap-font-scale))))
-                                    (floor (/ (window-body-height mm-win t)
-                                              row-px))))))
-                 (cur-themes (and (boundp 'custom-enabled-themes)
-                                  custom-enabled-themes))
-                 (needs-full (or (not (eq tick diff-minimap--last-tick))
-                                 (and cur-nrows
-                                      (not (= cur-nrows
-                                              (or diff-minimap--last-nrows 0))))
-                                 (not (equal cur-themes
-                                             diff-minimap--last-themes))))
-                 (live-pending (and diff-minimap-live-diff
-                                    (with-current-buffer buf
-                                      (and (buffer-modified-p)
-                                           (timerp diff-minimap--live-diff-timer))))))
-            (if (and needs-full (not live-pending))
-                (diff-minimap--render)
-              (diff-minimap--update-viewport)))))))
+      (unless (eq buf mm-buf)
+        (when mm-buf
+          (when (and diff-minimap--ediff-control-buffer
+                     (buffer-live-p diff-minimap--ediff-control-buffer)
+                     (or (eq buf diff-minimap--ediff-control-buffer)
+                         (with-current-buffer diff-minimap--ediff-control-buffer
+                           (or (eq buf (bound-and-true-p ediff-buffer-A))
+                               (eq buf (bound-and-true-p ediff-buffer-B))
+                               (eq buf (bound-and-true-p ediff-buffer-C))))))
+            (setq buf diff-minimap--ediff-control-buffer))
+          (unless (eq buf diff-minimap--last-buffer)
+            (setq diff-minimap--last-buffer buf)
+            (cond
+             ((not diff-minimap--sidebar-intended)
+              (if (get-buffer-window mm-buf 0)
+                  (diff-minimap--close-sidebar)
+                (with-current-buffer buf
+                  (diff-minimap--fringe-clear))))
+             ((with-current-buffer buf
+                (diff-minimap--current-buffer-has-changes-p))
+              (if (get-buffer-window mm-buf 0)
+                  (diff-minimap--render)
+                (diff-minimap--open-sidebar))
+              (run-with-timer
+               0.2 nil
+               (lambda ()
+                 (when (and (buffer-live-p buf)
+                            (eq diff-minimap--last-buffer buf)
+                            (get-buffer-window mm-buf 0))
+                   (with-current-buffer buf
+                     (diff-minimap--render))))))
+             (t
+              (diff-minimap--remove-hunk-overlays)
+              (diff-minimap--fringe-clear)
+              (when (get-buffer-window mm-buf 0)
+                (diff-minimap--close-sidebar)))))
+          (when (and (get-buffer-window mm-buf 0)
+                     (diff-minimap--backend-available-p)
+                     (eq buf diff-minimap--last-buffer))
+            (let* ((tick (with-current-buffer buf
+                           (buffer-chars-modified-tick)))
+                   (src-win (get-buffer-window buf 0))
+                    (cur-nrows (let ((mm-win (get-buffer-window mm-buf 0)))
+                                 (when mm-win
+                                   (let ((row-px (ceiling
+                                                  (* (frame-char-height)
+                                                     diff-minimap-font-scale))))
+                                     (floor (/ (window-body-height mm-win t)
+                                               row-px))))))
+                  (cur-themes (and (boundp 'custom-enabled-themes)
+                                   custom-enabled-themes))
+                  (needs-full (or (not (eq tick diff-minimap--last-tick))
+                                  (and cur-nrows
+                                       (not (= cur-nrows
+                                               (or diff-minimap--last-nrows 0))))
+                                  (not (equal cur-themes
+                                              diff-minimap--last-themes))))
+                  (live-pending (and diff-minimap-live-diff
+                                     (with-current-buffer buf
+                                       (and (buffer-modified-p)
+                                            (timerp diff-minimap--live-diff-timer))))))
+              (if (and needs-full (not live-pending))
+                  (diff-minimap--render)
+                (diff-minimap--update-viewport)))))))))
 
 (defun diff-minimap--after-save ()
   "Force re-render after save (idle delay lets the backend catch up)."
@@ -1438,10 +1489,21 @@ Existing inline hunks are left alone; missing ones are added."
     (when diff-minimap--inline-active
       (diff-minimap--remove-hunk-overlays)
       (diff-minimap--show-all-inline-hunks))
-    (when (and (get-buffer-window diff-minimap--buffer-name)
-               (eq (current-buffer)
-                   (window-buffer (selected-window))))
-      (diff-minimap--render))))
+    (when (eq (current-buffer)
+              (window-buffer (selected-window)))
+      (cond
+       ((not diff-minimap--sidebar-intended)
+        (when (get-buffer-window diff-minimap--buffer-name 0)
+          (diff-minimap--close-sidebar)))
+       ((diff-minimap--current-buffer-has-changes-p)
+        (if (get-buffer-window diff-minimap--buffer-name 0)
+            (diff-minimap--render)
+          (diff-minimap--open-sidebar)))
+       (t
+        (diff-minimap--remove-hunk-overlays)
+        (diff-minimap--fringe-clear)
+        (when (get-buffer-window diff-minimap--buffer-name 0)
+          (diff-minimap--close-sidebar)))))))
 
 (defun diff-minimap--after-change (&rest _)
   "Schedule a live diff refresh after the buffer text changes."
@@ -1539,66 +1601,114 @@ Overlays whose hunk no longer exists in the new diff are dropped."
                              (overlays-in (point-min) (point-max))))))
            (buffer-list)))
 
+(defun diff-minimap--current-buffer-has-changes-p ()
+  "Return non-nil if the current buffer has local changes.
+During an Ediff session, always return non-nil so the dual-column
+minimap is not hidden."
+  (or diff-minimap--ediff-control-buffer
+      (and (diff-minimap--backend-available-p)
+           (ignore-errors (diff-minimap--collect-diff-data)))))
+
+(defun diff-minimap--clear-sidebar-display ()
+  "Erase the minimap buffer contents."
+  (when-let* ((mm-buf (get-buffer diff-minimap--buffer-name)))
+    (with-current-buffer mm-buf
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (diff-minimap--clear-overlays)))))
+
+(defun diff-minimap--close-sidebar ()
+  "Delete the minimap side window and clear its display."
+  (when-let* ((win (get-buffer-window diff-minimap--buffer-name 0)))
+    (delete-window win))
+  (diff-minimap--fringe-clear)
+  (diff-minimap--clear-sidebar-display))
+
+(defun diff-minimap--open-sidebar ()
+  "Create, configure, and render the minimap side window."
+  (let* ((mm-buf (get-buffer-create diff-minimap--buffer-name))
+         (win (or (get-buffer-window mm-buf 0)
+                  (display-buffer-in-side-window
+                   mm-buf
+                   `((side . ,diff-minimap-side)
+                     (window-width . ,diff-minimap-width)
+                     (no-delete-other-windows . t)
+                     (no-other-window . t)
+                     (preserve-size . (t . nil)))))))
+    (when win
+      (set-window-parameter win 'no-delete-other-windows t)
+      (set-window-parameter win 'no-other-window t))
+    (with-current-buffer mm-buf
+      (setq window-size-fixed 'width)
+      (setq buffer-read-only t)
+      (setq cursor-type nil)
+      (setq line-spacing 0)
+      (setq-local truncate-lines t)
+      (setq-local left-fringe-width 0)
+      (setq-local right-fringe-width 0)
+      (face-remap-set-base 'default :height diff-minimap-font-scale)
+      (let ((map (make-sparse-keymap)))
+        (define-key map [down-mouse-1] #'diff-minimap--drag-handler)
+        (define-key map [mouse-1] #'diff-minimap--click-handler)
+        (define-key map [mouse-3] #'diff-minimap--click-show-hunk)
+        (define-key map [wheel-up] #'diff-minimap-mouse-wheel-up)
+        (define-key map [wheel-down] #'diff-minimap-mouse-wheel-down)
+        (define-key map [mouse-4] #'diff-minimap-mouse-wheel-up)
+        (define-key map [mouse-5] #'diff-minimap-mouse-wheel-down)
+        (use-local-map map))
+      (setq-local mode-line-format nil)
+      (setq-local header-line-format nil))
+    (setq diff-minimap--last-buffer (current-buffer))
+    (diff-minimap--render win)
+    (when win
+      (let ((buf (current-buffer)))
+        (run-with-timer
+         0.2 nil
+         (lambda ()
+           (when (and (buffer-live-p buf)
+                      (window-live-p win)
+                      (get-buffer-window diff-minimap--buffer-name 0)
+                      (eq buf diff-minimap--last-buffer))
+             (with-current-buffer buf
+               (diff-minimap--render win)))))))
+    (unless (bound-and-true-p diff-minimap-mode)
+      (diff-minimap-mode 1))
+    (when (and diff-minimap-inline-preview
+               (not diff-minimap--ediff-control-buffer))
+      (let ((buf (current-buffer)))
+        (run-with-timer
+         0 nil
+         (lambda ()
+           (when (and (buffer-live-p buf)
+                      (with-current-buffer buf
+                        (bound-and-true-p diff-minimap-mode)))
+             (with-current-buffer buf
+               (diff-minimap--show-all-inline-hunks)))))))
+    win))
+
 ;;;###autoload
 (defun diff-minimap-toggle ()
-  "Toggle the diff minimap side window."
+  "Toggle the diff minimap side window.
+The sidebar is only shown for buffers with local changes; in a
+buffer without changes, opening it is refused."
   (interactive)
   (let ((mm-buf (get-buffer-create diff-minimap--buffer-name)))
-    (if (get-buffer-window mm-buf)
-        (progn
-          ;; Closing the sidebar only clears inline hunks in the buffer
-          ;; where the toggle was invoked.  Other buffers keep their
-          ;; inline hunks (and live updates) intact.
-          (diff-minimap--remove-hunk-overlays)
-          (setq diff-minimap--inline-active nil)
-          (diff-minimap--fringe-clear)
-          (delete-window (get-buffer-window mm-buf))
-          (unless (diff-minimap--inline-active-in-any-buffer-p)
-            (diff-minimap-mode -1)))
-      (let ((win (display-buffer-in-side-window
-                  mm-buf
-                  `((side . ,diff-minimap-side)
-                    (window-width . ,diff-minimap-width)
-                    (no-delete-other-windows . t)
-                    (no-other-window . t)
-                    (preserve-size . (t . nil))))))
-        (when win
-          (set-window-parameter win 'no-delete-other-windows t)
-          (set-window-parameter win 'no-other-window t))
-        (with-current-buffer mm-buf
-          (setq window-size-fixed 'width)
-          (setq buffer-read-only t)
-          (setq cursor-type nil)
-          (setq line-spacing 0)
-          (setq-local truncate-lines t)
-          (setq-local left-fringe-width 0)
-          (setq-local right-fringe-width 0)
-          (face-remap-set-base 'default :height diff-minimap-font-scale)
-          (let ((map (make-sparse-keymap)))
-            (define-key map [down-mouse-1] #'diff-minimap--drag-handler)
-            (define-key map [mouse-1] #'diff-minimap--click-handler)
-            (define-key map [mouse-3] #'diff-minimap--click-show-hunk)
-            (define-key map [wheel-up] #'diff-minimap-mouse-wheel-up)
-            (define-key map [wheel-down] #'diff-minimap-mouse-wheel-down)
-            (define-key map [mouse-4] #'diff-minimap-mouse-wheel-up)
-            (define-key map [mouse-5] #'diff-minimap-mouse-wheel-down)
-            (use-local-map map))
-          (setq-local mode-line-format nil)
-          (setq-local header-line-format nil))
-        (diff-minimap--render)
-        (unless (bound-and-true-p diff-minimap-mode)
-          (diff-minimap-mode 1))
-        (when (and diff-minimap-inline-preview
-                   (not diff-minimap--ediff-control-buffer))
-          (let ((buf (current-buffer)))
-            (run-with-timer
-             0 nil
-             (lambda ()
-               (when (and (buffer-live-p buf)
-                          (with-current-buffer buf
-                            (bound-and-true-p diff-minimap-mode)))
-                 (with-current-buffer buf
-                   (diff-minimap--show-all-inline-hunks)))))))))))
+    (cond
+     ((or diff-minimap--sidebar-intended
+          (get-buffer-window mm-buf 0))
+      (setq diff-minimap--sidebar-intended nil)
+      ;; Closing clears inline hunks only in the buffer where the toggle
+      ;; was invoked.  Other buffers keep their inline hunks intact.
+      (diff-minimap--remove-hunk-overlays)
+      (setq diff-minimap--inline-active nil)
+      (diff-minimap--close-sidebar)
+      (unless (diff-minimap--inline-active-in-any-buffer-p)
+        (diff-minimap-mode -1)))
+     ((not (diff-minimap--current-buffer-has-changes-p))
+      (user-error "No local changes in this file"))
+     (t
+      (setq diff-minimap--sidebar-intended t)
+      (diff-minimap--open-sidebar)))))
 
 ;;;###autoload
 (defun diff-minimap-ediff-setup ()
@@ -1836,8 +1946,9 @@ file keep their normal bindings."
   "Global minor mode keeping the diff minimap in sync.
 When active, the minimap follows the selected buffer and updates on
 scroll, edit, save, buffer switch, and hunk navigation — no need to
-toggle per buffer.  When `diff-minimap-inline-preview' is non-nil,
-opening the minimap and hunk navigation show editable inline diffs.
+toggle per buffer.  The sidebar is only shown for buffers with local
+changes.  When `diff-minimap-inline-preview' is non-nil, opening the
+minimap and hunk navigation show editable inline diffs.
 \\{diff-minimap-mode-map}"
   :lighter " DMap"
   :global t
@@ -1869,12 +1980,15 @@ opening the minimap and hunk navigation show editable inline diffs.
     (advice-remove 'vc-diff #'diff-minimap--before-vc-diff)
     (advice-remove 'vc-diff #'diff-minimap--after-vc-diff)
     (diff-minimap--remove-ediff-advice)
+    (setq diff-minimap--sidebar-intended nil)
+    (diff-minimap--close-sidebar)
     (dolist (buf (buffer-list))
       (with-current-buffer buf
         (when (timerp diff-minimap--live-diff-timer)
           (cancel-timer diff-minimap--live-diff-timer)
           (setq diff-minimap--live-diff-timer nil))
         (diff-minimap--remove-hunk-overlays)
+        (diff-minimap--fringe-clear)
         (setq diff-minimap--inline-active nil)))
     (setq diff-minimap--last-buffer nil)))
 
