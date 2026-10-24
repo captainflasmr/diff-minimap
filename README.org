@@ -61,7 +61,8 @@ arrival).  They are bound globally to =C-x v ]= and =C-x v [=.
 | =C-x v [=  | =diff-minimap-previous-hunk=     |
 | =M-p=      | =diff-minimap-previous-hunk=     |
 | =M-S-F5=   | =diff-minimap-previous-hunk=     |
-| =C-c p=    | =diff-minimap-show-hunk=         |
+| =C-c e=    | =diff-minimap-show-hunk=         |
+| =C-c E=    | =diff-minimap-show-all-hunks=    |
 
 The =M-n=, =M-p=, =M-F5=, and =M-S-F5= bindings are in
 =diff-minimap-mode-map=, so they apply in file buffers while the minimap
@@ -69,14 +70,18 @@ is open.  The minibuffer keeps its history bindings, non-file buffers
 keep their normal bindings, and =C-x o= remains the way to switch
 windows while the minimap is active.
 
+The inline toggles use =C-c e= / =C-c E= rather than =C-c p= / =C-c P=,
+leaving those keys free for major modes (for example, Org users can bind
+=C-c P= to =org-slides-start=).
+
 When =diff-minimap-mode= is active and =diff-minimap-inline-preview= is
 non-nil (the default), opening the minimap shows every hunk inline;
 each jump ensures the destination hunk is shown too, without removing
-the others.  =C-c p= toggles the hunk at point.
+the others.  =C-c e= toggles the hunk at point.
 
 ** Inline diff editing
 
-~diff-minimap-show-hunk= (=C-c p=) shows the change at point as an
+~diff-minimap-show-hunk= (=C-c e=) shows the change at point as an
 editable inline diff.  Removed lines are rendered as read-only virtual
 text with the =diff-minimap-inline-removed= face; the added/changed
 lines are the real buffer text, highlighted with
@@ -88,8 +93,8 @@ faces, which some themes leave unspecified.
 Only the specific change group (the contiguous =-= /=+= block) containing
 point is shown per hunk, without surrounding context or unrelated changes
 from the same git hunk.  All hunks are shown when the minimap opens;
-=C-c p= toggles the hunk at point without clearing the others, and
-=C-c P= shows or hides every hunk in the buffer at once.
+=C-c e= toggles the hunk at point without clearing the others, and
+=C-c E= shows or hides every hunk in the buffer at once.
 
 Inline hunks follow the text with markers.  When =diff-minimap-live-diff=
 is non-nil (the default), editing recomputes the diff from the unsaved

@@ -1804,10 +1804,10 @@ Uses the configured `diff-minimap-diff-backend' to find hunks."
                 (throw 'found nil))))
           (recenter 0))))))
 
-(defun diff-minimap--hunk-nav-filter (binding)
-  "Return BINDING for hunk navigation in file buffers.
-Return nil in the minibuffer and in buffers without a file, so their
-normal M-n / M-p (and M-F5 / M-S-F5) bindings still apply."
+(defun diff-minimap--file-buffer-filter (binding)
+  "Return BINDING in file buffers, nil elsewhere.
+Used for inline-diff commands so the minibuffer and buffers without a
+file keep their normal bindings."
   (unless (or (minibufferp)
               (not (buffer-file-name)))
     binding))
@@ -1817,16 +1817,18 @@ normal M-n / M-p (and M-F5 / M-S-F5) bindings still apply."
 
 (setq diff-minimap-mode-map
       (let ((map (make-sparse-keymap)))
-        (define-key map (kbd "C-c p") #'diff-minimap-show-hunk)
-        (define-key map (kbd "C-c P") #'diff-minimap-show-all-hunks)
+        (define-key map (kbd "C-c e")
+          '(menu-item "" diff-minimap-show-hunk :filter diff-minimap--file-buffer-filter))
+        (define-key map (kbd "C-c E")
+          '(menu-item "" diff-minimap-show-all-hunks :filter diff-minimap--file-buffer-filter))
         (define-key map (kbd "M-n")
-          '(menu-item "" diff-minimap-next-hunk :filter diff-minimap--hunk-nav-filter))
+          '(menu-item "" diff-minimap-next-hunk :filter diff-minimap--file-buffer-filter))
         (define-key map (kbd "M-p")
-          '(menu-item "" diff-minimap-previous-hunk :filter diff-minimap--hunk-nav-filter))
+          '(menu-item "" diff-minimap-previous-hunk :filter diff-minimap--file-buffer-filter))
         (define-key map (kbd "M-<f5>")
-          '(menu-item "" diff-minimap-next-hunk :filter diff-minimap--hunk-nav-filter))
+          '(menu-item "" diff-minimap-next-hunk :filter diff-minimap--file-buffer-filter))
         (define-key map (kbd "M-S-<f5>")
-          '(menu-item "" diff-minimap-previous-hunk :filter diff-minimap--hunk-nav-filter))
+          '(menu-item "" diff-minimap-previous-hunk :filter diff-minimap--file-buffer-filter))
         map))
 
 ;;;###autoload
