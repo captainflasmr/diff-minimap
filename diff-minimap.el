@@ -1545,9 +1545,11 @@ Overlays whose hunk no longer exists in the new diff are dropped."
                   `((side . ,diff-minimap-side)
                     (window-width . ,diff-minimap-width)
                     (no-delete-other-windows . t)
+                    (no-other-window . t)
                     (preserve-size . (t . nil))))))
         (when win
-          (set-window-parameter win 'no-delete-other-windows t))
+          (set-window-parameter win 'no-delete-other-windows t)
+          (set-window-parameter win 'no-other-window t))
         (with-current-buffer mm-buf
           (setq window-size-fixed 'width)
           (setq buffer-read-only t)
@@ -1786,14 +1788,30 @@ Uses the configured `diff-minimap-diff-backend' to find hunks."
                 (throw 'found nil))))
           (recenter 0))))))
 
-(defvar diff-minimap-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c p") #'diff-minimap-show-hunk)
-    (define-key map (kbd "C-c P") #'diff-minimap-show-all-hunks)
-    map)
-  "Keymap for `diff-minimap-mode'.
-Bound keys:
-\\{diff-minimap-mode-map}")
+(defun diff-minimap--hunk-nav-filter (binding)
+  "Return BINDING for hunk navigation in file buffers.
+Return nil in the minibuffer and in buffers without a file, so their
+normal M-n / M-p (and M-F5 / M-S-F5) bindings still apply."
+  (unless (or (minibufferp)
+              (not (buffer-file-name)))
+    binding))
+
+(defvar diff-minimap-mode-map nil
+  "Keymap for `diff-minimap-mode'.")
+
+(setq diff-minimap-mode-map
+      (let ((map (make-sparse-keymap)))
+        (define-key map (kbd "C-c p") #'diff-minimap-show-hunk)
+        (define-key map (kbd "C-c P") #'diff-minimap-show-all-hunks)
+        (define-key map (kbd "M-n")
+          '(menu-item "" diff-minimap-next-hunk :filter diff-minimap--hunk-nav-filter))
+        (define-key map (kbd "M-p")
+          '(menu-item "" diff-minimap-previous-hunk :filter diff-minimap--hunk-nav-filter))
+        (define-key map (kbd "M-<f5>")
+          '(menu-item "" diff-minimap-next-hunk :filter diff-minimap--hunk-nav-filter))
+        (define-key map (kbd "M-S-<f5>")
+          '(menu-item "" diff-minimap-previous-hunk :filter diff-minimap--hunk-nav-filter))
+        map))
 
 ;;;###autoload
 (define-minor-mode diff-minimap-mode

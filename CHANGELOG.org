@@ -16,8 +16,10 @@ Live diff updates while typing.
 
 - Add =diff-minimap-live-diff= (default =t=) and =diff-minimap-live-diff-delay= (default 0.2s).  Editing a file buffer recomputes the diff from the unsaved buffer text against git =HEAD= after an idle delay, so inline hunks and the minimap follow changes without saving.  Reverting the text to its =HEAD= state removes the inline hunks automatically.
 - Add =diff-minimap--git-output=, which passes git arguments directly instead of shell-splitting a command string, and use repo-root-relative paths for =git show=.  This fixes live diffs for files in subdirectories and file names containing spaces.
+- Bind =M-n= / =M-p= and VSCode-like =M-F5= / =M-S-F5= to hunk navigation in =diff-minimap-mode-map=.  They apply in file buffers while the minimap is open; the minibuffer keeps history navigation, non-file buffers keep their normal bindings, and =C-x o= remains the way to switch windows.
 - =diff-minimap--post-command= defers a full minimap render while a live update is pending, avoiding a git diff on every keystroke; the idle timer refreshes both the minimap and the inline hunks.
 - =diff-minimap--inline-active= tracks whether a buffer should keep its inline hunks in sync.  =C-c P= (toggle all off) stops automatic re-showing until inline hunks are shown again with =C-c p= or =C-c P=.
+- Mark the minimap side window with =no-other-window=, so =C-x o= and window-motion commands skip the read-only overview instead of selecting it.
 - Untracked files are treated as empty at =HEAD=, so every line shows as an addition in the live view.
 
 ** 0.9.0 — <2026-10-23>
