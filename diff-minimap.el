@@ -1763,13 +1763,47 @@ minimap is not hidden."
      ((diff-minimap--current-buffer-has-changes-p)
       (if (and (get-buffer-window diff-minimap--buffer-name 0)
                (eq diff-minimap--last-buffer (current-buffer)))
-          (when (and diff-minimap-inline-preview
-                     (not diff-minimap--ediff-control-buffer)
-                     (not diff-minimap--inline-suspended))
-            (diff-minimap--show-all-inline-hunks))
+          (progn
+            (diff-minimap--render)
+            (when (and diff-minimap-inline-preview
+                       (not diff-minimap--ediff-control-buffer)
+                       (not diff-minimap--inline-suspended))
+              (diff-minimap--show-all-inline-hunks)))
         (diff-minimap--open-sidebar)))
      ((eq diff-minimap--last-buffer (current-buffer))
       (diff-minimap--close-sidebar)))))
+
+(defun diff-minimap--change-major-mode ()
+  "Clean up before `kill-all-local-variables' disables the mode.
+`revert-buffer' and major-mode changes kill buffer-local variables
+without running the mode's turn-off body, which would otherwise
+leave stale inline overlays and timers behind."
+  (when (bound-and-true-p diff-minimap-mode)
+    (when (timerp diff-minimap--live-diff-timer)
+      (cancel-timer diff-minimap--live-diff-timer)
+      (setq diff-minimap--live-diff-timer nil))
+    (diff-minimap--remove-hunk-overlays)
+    (diff-minimap--fringe-clear)
+    (setq diff-minimap--inline-active nil
+          diff-minimap--inline-suspended nil
+          diff-minimap--sidebar-intended nil)
+    (when (eq diff-minimap--last-buffer (current-buffer))
+      (diff-minimap--close-sidebar))
+    (diff-minimap--maybe-remove-global-integration (current-buffer))))
+
+(defun diff-minimap--after-revert ()
+  "Refresh the minimap after `revert-buffer' if the mode survived.
+A manual `revert-buffer' kills buffer-local modes through
+`normal-mode', so there is nothing to restore.  Auto-revert passes
+`preserve-modes', leaving the mode enabled; rebuild its overlays and
+sidebar from the reread text in that case."
+  (when (bound-and-true-p diff-minimap-mode)
+    (diff-minimap--remove-hunk-overlays)
+    (diff-minimap--activate-buffer)
+    (when (and diff-minimap-inline-preview
+               (not diff-minimap--ediff-control-buffer)
+               (not diff-minimap--inline-suspended))
+      (diff-minimap--show-all-inline-hunks))))
 
 (defun diff-minimap--clear-sidebar-display ()
   "Erase the minimap buffer contents."
@@ -2202,6 +2236,8 @@ point to its HEAD text without saving.
         (add-hook 'isearch-update-post-hook #'diff-minimap--search-update nil t)
         (add-hook 'isearch-mode-end-hook #'diff-minimap--search-clear nil t)
         (add-hook 'kill-buffer-hook #'diff-minimap--buffer-killed nil t)
+        (add-hook 'change-major-mode-hook #'diff-minimap--change-major-mode nil t)
+        (add-hook 'after-revert-hook #'diff-minimap--after-revert nil t)
         (diff-minimap--install-global-integration)
         (diff-minimap--activate-buffer))
     (remove-hook 'after-change-functions #'diff-minimap--after-change t)
@@ -2210,6 +2246,8 @@ point to its HEAD text without saving.
     (remove-hook 'isearch-update-post-hook #'diff-minimap--search-update t)
     (remove-hook 'isearch-mode-end-hook #'diff-minimap--search-clear t)
     (remove-hook 'kill-buffer-hook #'diff-minimap--buffer-killed t)
+    (remove-hook 'change-major-mode-hook #'diff-minimap--change-major-mode t)
+    (remove-hook 'after-revert-hook #'diff-minimap--after-revert t)
     (when (timerp diff-minimap--live-diff-timer)
       (cancel-timer diff-minimap--live-diff-timer)
       (setq diff-minimap--live-diff-timer nil))

@@ -19,6 +19,7 @@ Buffer-local mode.
 - Move =C-x v ]= / =C-x v [= from =vc-prefix-map= into =diff-minimap-mode-map= so the bindings exist only in enabled buffers.  The commands also signal a user error when invoked with =M-x= in a buffer without the mode.
 - The shared post-command hook, VC advice, and Ediff integration are installed only while at least one buffer enables the mode, and removed when the last enabled buffer is disabled or killed.
 - Ediff integration no longer enables the mode in the control buffer; it opens the dual-column minimap only when one of the Ediff file buffers already has the mode enabled, and leaves each file's mode state untouched on teardown.
+- =revert-buffer= now behaves like other buffer-local modes: rereading the file disables =diff-minimap-mode=, and the cleanup removes inline overlays, timers, fringe indicators, and the sidebar instead of leaving stale hunks behind.  Auto-revert passes =preserve-modes=, so when the mode survives a revert its sidebar and inline hunks are rebuilt from the reread file.  =change-major-mode-hook= also cleans up overlays, timers, and the sidebar before =kill-all-local-variables= disables the mode.
 
 ** 0.11.1 — <2026-10-26>
 
