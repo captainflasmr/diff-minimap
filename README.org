@@ -27,13 +27,13 @@ Or with =use-package= (no =:ensure= since it is a local package):
 
 ~M-x diff-minimap-toggle~ opens the minimap in a side window.  The same command closes it.  The toggle is not bound to a key by default, so loading the package leaves stock VC keys such as =C-x v m= (=vc-merge=) alone; bind it in your own configuration if you want a shortcut.
 
-The minor mode =diff-minimap-mode= is automatically activated when the minimap opens and deactivated when it closes.  It is a global mode — once toggled on, the minimap follows the selected buffer automatically, re-rendering for each file that has a diff backend available, and clearing when entering Dired or other buffers without changes.
+The minor mode =diff-minimap-mode= is buffer-local.  It is activated in the current file when the minimap opens and deactivated when it closes.  Enabling it in one file does not enable it in others; each file keeps its own mode, inline hunks, and keybindings.  Switching to a file without the mode hides the shared sidebar, and switching back restores it.
 
 The minimap side window is marked =no-other-window=, so =C-x o= and window-motion commands skip it.  Interact with the minimap using the mouse.
 
-The sidebar is only shown for files with local changes.  Opening it in a clean file is refused, and switching to a clean buffer hides the shared sidebar while keeping the global mode and other buffers' inline hunks intact; switching back to a changed file restores it.
+The sidebar is only shown for files with local changes.  Opening it in a clean file is refused, and switching to a clean buffer hides the shared sidebar while keeping the mode and inline hunks intact; switching back to a changed file restores it.
 
-Toggling the minimap off (=C-z m=) clears inline hunks only in the buffer where you invoke it.  Other buffers keep their inline hunks and continue updating live; the global mode stays enabled while any buffer still shows inline hunks.
+Toggling the minimap off (=C-z m=) clears inline hunks and disables the mode only in the current buffer.  Other files that enabled the mode keep their inline hunks and live updates, and need to be toggled off separately.
 
 Opening the minimap shows every diff hunk inline (when =diff-minimap-inline-preview= is non-nil): removed lines are read-only virtual text, while the added/changed lines remain ordinary buffer text you can edit in place.  The inline views update live as you type, =C-x v ]= / =C-x v [= step between the hunks, and =C-c r= reverts the hunk at point without leaving the buffer.
 
@@ -53,7 +53,9 @@ buffer directly from it:
 
 ~diff-minimap-next-hunk~ and ~diff-minimap-previous-hunk~ jump between
 diff hunks using the configured backend (the full hunk range pulses on
-arrival).  They are bound globally to =C-x v ]= and =C-x v [=.
+arrival).  They are bound to =C-x v ]= and =C-x v [= in
+=diff-minimap-mode-map=, so they apply only in buffers where the mode is
+enabled.
 
 | Keybinding | Command                          |
 |------------+----------------------------------|
@@ -67,11 +69,11 @@ arrival).  They are bound globally to =C-x v ]= and =C-x v [=.
 | =C-c E=    | =diff-minimap-show-all-hunks=    |
 | =C-c r=    | =diff-minimap-revert-hunk=       |
 
-The =M-n=, =M-p=, =M-F5=, and =M-S-F5= bindings are in
-=diff-minimap-mode-map=, so they apply in file buffers while the minimap
-is open.  The minibuffer keeps its history bindings, non-file buffers
-keep their normal bindings, and =C-x o= remains the way to switch
-windows while the minimap is active.
+The =M-n=, =M-p=, =M-F5=, =M-S-F5=, =C-x v ]=, and =C-x v [= bindings
+are in =diff-minimap-mode-map=, so they apply only in file buffers where
+the mode is enabled.  The minibuffer keeps its history bindings,
+non-file buffers keep their normal bindings, and =C-x o= remains the way
+to switch windows while the minimap is active.
 
 The inline commands use =C-c e= / =C-c E= / =C-c r= rather than
 =C-c p= / =C-c P=, leaving those keys free for major modes (for example,
@@ -260,7 +262,7 @@ The minimap buffer is written once by =diff-minimap--render=, which:
 
 The viewport indicator and cursor marker are then drawn as Emacs overlays on top of the minimap buffer — they are updated on every =post-command-hook= by =diff-minimap--update-viewport= (no buffer text is touched).
 
-The mode is global: the minimap window lives on one side of the frame and its content follows the selected buffer.  Switching to a file with an available backend triggers a full render; switching to Dired or a buffer without changes clears the minimap until a file buffer is selected again.
+The mode is buffer-local and owns the shared sidebar only while its buffer is selected: the minimap window lives on one side of the frame and shows the selected buffer's diffs when that buffer has the mode enabled.  Switching to a file without the mode hides the sidebar; switching to another enabled file renders that file; switching to Dired or a buffer without changes clears the minimap until an enabled changed file is selected again.
 
 A full re-render (=diff-minimap--render=) is triggered only when:
 

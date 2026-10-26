@@ -10,6 +10,16 @@ This document contains the release notes for diff-minimap.
 
 * Versions
 
+** 0.12.0 — <2026-10-26>
+
+Buffer-local mode.
+
+- =diff-minimap-mode= is now buffer-local instead of global.  Enabling the minimap in one file no longer enables hunk navigation, inline previews, or live updates in every other file.  Each file must enable the mode separately, and toggling it off affects only that file.
+- Fix hunk navigation and inline previews reappearing in a buffer after =C-z m= when another file still had the minimap enabled.  A buffer without the mode now hides the shared sidebar, ignores the hunk-navigation commands, and never re-creates inline overlays there; switching back to an enabled file restores its sidebar.
+- Move =C-x v ]= / =C-x v [= from =vc-prefix-map= into =diff-minimap-mode-map= so the bindings exist only in enabled buffers.  The commands also signal a user error when invoked with =M-x= in a buffer without the mode.
+- The shared post-command hook, VC advice, and Ediff integration are installed only while at least one buffer enables the mode, and removed when the last enabled buffer is disabled or killed.
+- Ediff integration no longer enables the mode in the control buffer; it opens the dual-column minimap only when one of the Ediff file buffers already has the mode enabled, and leaves each file's mode state untouched on teardown.
+
 ** 0.11.1 — <2026-10-26>
 
 Keep inline hunks across Ediff sessions.

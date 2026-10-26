@@ -1,7 +1,7 @@
 ;;; diff-minimap.el --- VSCode-style minimap showing diff regions -*- lexical-binding: t; -*-
 ;;
 ;; Author: James Dyer <captainflasmr@gmail.com>
-;; Version: 0.11.1
+;; Version: 0.12.0
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: vc, tools, convenience
 ;; URL: https://github.com/captainflasmr/diff-minimap
@@ -36,7 +36,9 @@
 ;;
 ;; The toggle is deliberately left unbound so loading the package does not
 ;; shadow stock VC keys (`C-x v m' is `vc-merge').  Bind it in your own
-;; configuration if you want a shortcut.  Opening the minimap shows every
+;; configuration if you want a shortcut.  `diff-minimap-mode' is
+;; buffer-local: enable it separately in each file where you want the
+;; minimap.  Opening the minimap shows every
 ;; hunk inline; removed lines are read-only virtual text, while
 ;; added/changed lines stay in the buffer and can be edited in place.  The
 ;; diff updates live as you type, and reverting text to HEAD removes the
@@ -249,10 +251,11 @@ The hunks are restored when the buffer is shown outside the Ediff
 windows, so leaving the session with `tab-bar-history-back' brings
 them back.")
 
-(defvar diff-minimap--sidebar-intended nil
-  "Whether the user wants the minimap sidebar shown.
+(defvar-local diff-minimap--sidebar-intended nil
+  "Whether this buffer wants the minimap sidebar shown.
 The sidebar is hidden for buffers without local changes while this
-remains non-nil, so switching back to a changed file restores it.")
+remains non-nil, so switching back to a changed file restores it.
+Only buffers with `diff-minimap-mode' enabled set this.")
 
 (defvar-local diff-minimap--last-nrows nil
   "Minimap row count at last full render — for detecting window resizes.")
@@ -281,8 +284,8 @@ remains non-nil, so switching back to a changed file restores it.")
 (defvar diff-minimap--ediff-control-buffer nil
   "The active Ediff control buffer if rendering a dual-column minimap.")
 
-(defvar diff-minimap--ediff-prev-sidebar-intended nil
-  "Value of `diff-minimap--sidebar-intended' before the Ediff session.")
+(defvar diff-minimap--global-hooks-installed nil
+  "Whether the global hooks and advice used by enabled buffers are installed.")
 
 (defvar diff-minimap--ediff-visible nil
   "Whether the current Ediff session was visible at the last command.")
@@ -1128,10 +1131,10 @@ registered with `get-buffer-window'."
               (goto-char (point-min))))))))
 
 (defun diff-minimap--post-command ()
-  "Immediate post-command-hook: update viewport/cursor overlays or full re-render.
-Detects buffer switches, shows the sidebar only for buffers with local
-changes, and clears it when entering a buffer without changes or a diff
-backend."
+  "Global post-command hook for enabled buffers.
+Update the sidebar for the selected buffer when that buffer has
+`diff-minimap-mode' enabled.  A buffer without the mode hides the
+sidebar so it never shows another file's minimap."
   ;; Ediff hides inline hunks while its own windows are visible.  Restore
   ;; them as soon as the user leaves the Ediff windows (for example with
   ;; `tab-bar-history-back'), and hide them again when returning.
@@ -1144,82 +1147,95 @@ backend."
                          (diff-minimap--ediff-session-buffers))))
       (diff-minimap--suspend-ediff-inline-hunks))
     (setq diff-minimap--ediff-visible ediff-visible))
-  (when (or (get-buffer-window diff-minimap--buffer-name 0)
-            diff-minimap--sidebar-intended)
-    (let ((buf (current-buffer))
-          (mm-buf (get-buffer diff-minimap--buffer-name)))
-      (unless (eq buf mm-buf)
-        (when mm-buf
-          (when (and diff-minimap--ediff-control-buffer
-                     (buffer-live-p diff-minimap--ediff-control-buffer)
-                     (or (eq buf diff-minimap--ediff-control-buffer)
-                         (with-current-buffer diff-minimap--ediff-control-buffer
-                           (or (eq buf (bound-and-true-p ediff-buffer-A))
-                               (eq buf (bound-and-true-p ediff-buffer-B))
-                               (eq buf (bound-and-true-p ediff-buffer-C))))))
-            (setq buf diff-minimap--ediff-control-buffer))
-          (unless (eq buf diff-minimap--last-buffer)
-            (setq diff-minimap--last-buffer buf)
-            (cond
-             ((not diff-minimap--sidebar-intended)
-              (if (get-buffer-window mm-buf 0)
-                  (diff-minimap--close-sidebar)
-                (with-current-buffer buf
-                  (diff-minimap--fringe-clear))))
-             ((with-current-buffer buf
-                (diff-minimap--current-buffer-has-changes-p))
-              (if (get-buffer-window mm-buf 0)
-                  (diff-minimap--render)
-                (diff-minimap--open-sidebar))
-              (run-with-timer
-               0.2 nil
-               (lambda ()
-                 (when (and (buffer-live-p buf)
-                            (eq diff-minimap--last-buffer buf)
-                            (get-buffer-window mm-buf 0))
-                   (with-current-buffer buf
-                     (diff-minimap--render))))))
-             (t
-              (diff-minimap--remove-hunk-overlays)
-              (diff-minimap--fringe-clear)
-              (when (get-buffer-window mm-buf 0)
-                (diff-minimap--close-sidebar)))))
-          (when (and (get-buffer-window mm-buf 0)
-                     (diff-minimap--backend-available-p)
-                     (eq buf diff-minimap--last-buffer))
-            (let* ((tick (with-current-buffer buf
-                           (buffer-chars-modified-tick)))
-                   (src-win (get-buffer-window buf 0))
-                    (cur-nrows (let ((mm-win (get-buffer-window mm-buf 0)))
-                                 (when mm-win
-                                   (let ((row-px (ceiling
-                                                  (* (frame-char-height)
-                                                     diff-minimap-font-scale))))
-                                     (floor (/ (window-body-height mm-win t)
-                                               row-px))))))
-                  (cur-themes (and (boundp 'custom-enabled-themes)
-                                   custom-enabled-themes))
-                  (needs-full (or (not (eq tick diff-minimap--last-tick))
-                                  (and cur-nrows
-                                       (not (= cur-nrows
-                                               (or diff-minimap--last-nrows 0))))
-                                  (not (equal cur-themes
-                                              diff-minimap--last-themes))))
-                  (live-pending (and diff-minimap-live-diff
-                                     (with-current-buffer buf
-                                       (and (buffer-modified-p)
-                                            (timerp diff-minimap--live-diff-timer))))))
-              (if (and needs-full (not live-pending))
-                  (diff-minimap--render)
-                (diff-minimap--update-viewport)))))))))
+  (let* ((mm-buf (get-buffer diff-minimap--buffer-name))
+         (ediff-session (and diff-minimap--ediff-control-buffer
+                             (buffer-live-p diff-minimap--ediff-control-buffer)))
+         (ediff-buf (and ediff-session
+                         (or (eq (current-buffer) diff-minimap--ediff-control-buffer)
+                             (memq (current-buffer)
+                                   (diff-minimap--ediff-session-buffers)))))
+         (enabled (or (bound-and-true-p diff-minimap-mode)
+                      (and ediff-buf
+                           (cl-some (lambda (b)
+                                      (buffer-local-value 'diff-minimap-mode b))
+                                    (diff-minimap--ediff-session-buffers)))))
+         (intended (or diff-minimap--sidebar-intended ediff-buf))
+         (buf (current-buffer)))
+    (unless (or (eq buf mm-buf)
+                (minibufferp buf))
+      (cond
+       ((not enabled)
+        (when (and mm-buf (get-buffer-window mm-buf 0))
+          (diff-minimap--close-sidebar))
+        (setq diff-minimap--last-buffer nil))
+       ((not intended)
+        (when (and mm-buf (get-buffer-window mm-buf 0))
+          (diff-minimap--close-sidebar))
+        (setq diff-minimap--last-buffer nil))
+       (t
+        (when ediff-buf
+          (setq buf diff-minimap--ediff-control-buffer))
+        (unless (eq buf diff-minimap--last-buffer)
+          (setq diff-minimap--last-buffer buf)
+          (cond
+           ((with-current-buffer buf
+              (diff-minimap--current-buffer-has-changes-p))
+            (if (and mm-buf (get-buffer-window mm-buf 0))
+                (diff-minimap--render)
+              (diff-minimap--open-sidebar))
+            (run-with-timer
+             0.2 nil
+             (lambda ()
+               (when (and (buffer-live-p buf)
+                          (eq diff-minimap--last-buffer buf)
+                          (get-buffer-window diff-minimap--buffer-name 0))
+                 (with-current-buffer buf
+                   (diff-minimap--render))))))
+           (t
+            (diff-minimap--remove-hunk-overlays)
+            (diff-minimap--fringe-clear)
+            (when (and mm-buf (get-buffer-window mm-buf 0))
+              (diff-minimap--close-sidebar)))))
+        (when (and mm-buf
+                   (get-buffer-window mm-buf 0)
+                   (diff-minimap--backend-available-p)
+                   (eq buf diff-minimap--last-buffer))
+          (let* ((tick (with-current-buffer buf
+                         (buffer-chars-modified-tick)))
+                 (cur-nrows (let ((mm-win (get-buffer-window mm-buf 0)))
+                              (when mm-win
+                                (let ((row-px (ceiling
+                                               (* (frame-char-height)
+                                                  diff-minimap-font-scale))))
+                                  (floor (/ (window-body-height mm-win t)
+                                            row-px))))))
+                 (cur-themes (and (boundp 'custom-enabled-themes)
+                                  custom-enabled-themes))
+                 (needs-full (or (not (eq tick diff-minimap--last-tick))
+                                 (and cur-nrows
+                                      (not (= cur-nrows
+                                              (or diff-minimap--last-nrows 0))))
+                                 (not (equal cur-themes
+                                             diff-minimap--last-themes))))
+                 (live-pending (and diff-minimap-live-diff
+                                    (with-current-buffer buf
+                                      (and (buffer-modified-p)
+                                           (timerp diff-minimap--live-diff-timer))))))
+            (if (and needs-full (not live-pending))
+                (diff-minimap--render)
+              (diff-minimap--update-viewport)))))))))
 
 (defun diff-minimap--after-save ()
-  "Force re-render after save (idle delay lets the backend catch up)."
+  "Force a re-render after save when this buffer owns the sidebar."
   (let ((buf (current-buffer)))
     (run-with-idle-timer
      0.05 nil
      (lambda ()
-       (when (buffer-live-p buf)
+       (when (and (buffer-live-p buf)
+                  (with-current-buffer buf
+                    (bound-and-true-p diff-minimap-mode))
+                  (eq buf diff-minimap--last-buffer)
+                  (get-buffer-window diff-minimap--buffer-name 0))
          (with-current-buffer buf
            (diff-minimap--render)))))))
 
@@ -1581,11 +1597,14 @@ compare HEAD with the unsaved buffer text instead of the saved file,
 so an explicit revert is reflected even if `diff-minimap-live-diff'
 is nil."
   (let ((diff-minimap-live-diff (or use-buffer-diff diff-minimap-live-diff)))
-    (when diff-minimap--inline-active
+    (when (and diff-minimap--inline-active
+               (bound-and-true-p diff-minimap-mode))
       (diff-minimap--remove-hunk-overlays)
       (diff-minimap--show-all-inline-hunks))
-    (when (eq (current-buffer)
-              (window-buffer (selected-window)))
+    (when (and (eq (current-buffer)
+                   (window-buffer (selected-window)))
+               (or (null diff-minimap--last-buffer)
+                   (eq (current-buffer) diff-minimap--last-buffer)))
       (cond
        ((not diff-minimap--sidebar-intended)
         (when (get-buffer-window diff-minimap--buffer-name 0)
@@ -1628,10 +1647,16 @@ is nil."
                    (setq diff-minimap--live-diff-timer nil)
                    (diff-minimap--refresh-live-diff)))))))))
 
+(defun diff-minimap--ensure-mode ()
+  "Signal a user error unless `diff-minimap-mode' is enabled here."
+  (unless (bound-and-true-p diff-minimap-mode)
+    (user-error "diff-minimap-mode is not enabled in this buffer")))
+
 (defun diff-minimap-show-all-hunks ()
   "Show or hide all editable inline diff hunks in the current buffer.
 Toggles: if any hunk overlays exist, remove them all. Otherwise, show all."
   (interactive)
+  (diff-minimap--ensure-mode)
   (let ((ovs (cl-remove-if-not (lambda (ov) (overlay-get ov 'diff-minimap-hunk))
                                (overlays-in (point-min) (point-max)))))
     (if ovs
@@ -1646,6 +1671,7 @@ Removed lines are read-only virtual text; added/changed lines stay in
 the buffer and can be edited normally.  Other inline hunks are left
 alone; use `diff-minimap-show-all-hunks' to toggle every hunk."
   (interactive)
+  (diff-minimap--ensure-mode)
   (let* ((line (line-number-at-pos))
          ;; Find ANY hunk overlay at point (including batch-created ones)
          (hunk-ov (cl-find-if (lambda (ov) (overlay-get ov 'diff-minimap-hunk))
@@ -1720,15 +1746,6 @@ Overlays whose hunk no longer exists in the new diff are dropped."
                   (diff-minimap--show-hunk-overlay hunk (nth 1 hunk) full-patch)))))
           (set-marker marker nil))))))
 
-(defun diff-minimap--inline-active-in-any-buffer-p ()
-  "Return non-nil if any live buffer has visible inline hunks."
-  (cl-some (lambda (buf)
-             (with-current-buffer buf
-               (and diff-minimap--inline-active
-                    (cl-some (lambda (ov) (overlay-get ov 'diff-minimap-hunk))
-                             (overlays-in (point-min) (point-max))))))
-           (buffer-list)))
-
 (defun diff-minimap--current-buffer-has-changes-p ()
   "Return non-nil if the current buffer has local changes.
 During an Ediff session, always return non-nil so the dual-column
@@ -1736,6 +1753,23 @@ minimap is not hidden."
   (or diff-minimap--ediff-control-buffer
       (and (diff-minimap--backend-available-p)
            (ignore-errors (diff-minimap--collect-diff-data)))))
+
+(defun diff-minimap--activate-buffer ()
+  "Show the sidebar and inline hunks for the current enabled buffer."
+  (when (and diff-minimap--sidebar-intended
+             (bound-and-true-p diff-minimap-mode)
+             (eq (current-buffer) (window-buffer (selected-window))))
+    (cond
+     ((diff-minimap--current-buffer-has-changes-p)
+      (if (and (get-buffer-window diff-minimap--buffer-name 0)
+               (eq diff-minimap--last-buffer (current-buffer)))
+          (when (and diff-minimap-inline-preview
+                     (not diff-minimap--ediff-control-buffer)
+                     (not diff-minimap--inline-suspended))
+            (diff-minimap--show-all-inline-hunks))
+        (diff-minimap--open-sidebar)))
+     ((eq diff-minimap--last-buffer (current-buffer))
+      (diff-minimap--close-sidebar)))))
 
 (defun diff-minimap--clear-sidebar-display ()
   "Erase the minimap buffer contents."
@@ -1750,7 +1784,8 @@ minimap is not hidden."
   (when-let* ((win (get-buffer-window diff-minimap--buffer-name 0)))
     (delete-window win))
   (diff-minimap--fringe-clear)
-  (diff-minimap--clear-sidebar-display))
+  (diff-minimap--clear-sidebar-display)
+  (setq diff-minimap--last-buffer nil))
 
 (defun diff-minimap--open-sidebar ()
   "Create, configure, and render the minimap side window."
@@ -1799,8 +1834,6 @@ minimap is not hidden."
                       (eq buf diff-minimap--last-buffer))
              (with-current-buffer buf
                (diff-minimap--render win)))))))
-    (unless (bound-and-true-p diff-minimap-mode)
-      (diff-minimap-mode 1))
     (when (and diff-minimap-inline-preview
                (not diff-minimap--ediff-control-buffer))
       (let ((buf (current-buffer)))
@@ -1816,69 +1849,72 @@ minimap is not hidden."
 
 ;;;###autoload
 (defun diff-minimap-toggle ()
-  "Toggle the diff minimap side window.
+  "Toggle the diff minimap for the current buffer.
+The mode is buffer-local: enabling it affects only the file where it
+was invoked, and other files with their own minimap stay untouched.
 The sidebar is only shown for buffers with local changes; in a
 buffer without changes, opening it is refused."
   (interactive)
-  (let ((mm-buf (get-buffer-create diff-minimap--buffer-name)))
-    (cond
-     ((or diff-minimap--sidebar-intended
-          (get-buffer-window mm-buf 0))
-      (setq diff-minimap--sidebar-intended nil)
-      ;; Closing clears inline hunks only in the buffer where the toggle
-      ;; was invoked.  Other buffers keep their inline hunks intact.
-      (diff-minimap--remove-hunk-overlays)
-      (setq diff-minimap--inline-active nil)
-      (diff-minimap--close-sidebar)
-      (unless (diff-minimap--inline-active-in-any-buffer-p)
-        (diff-minimap-mode -1)))
-     ((not (diff-minimap--current-buffer-has-changes-p))
-      (user-error "No local changes in this file"))
-     (t
-      (setq diff-minimap--sidebar-intended t)
-      (diff-minimap--open-sidebar)))))
+  (cond
+   ((bound-and-true-p diff-minimap-mode)
+    (diff-minimap-mode -1))
+   ((not (diff-minimap--current-buffer-has-changes-p))
+    (user-error "No local changes in this file"))
+   (t
+    (diff-minimap-mode 1))))
 
 ;;;###autoload
 (defun diff-minimap-ediff-setup ()
-  "Open the diff minimap during an Ediff session."
+  "Open the diff minimap during an Ediff session.
+The mode stays buffer-local: the dual-column minimap is only shown
+when at least one of the Ediff file buffers already enables it."
   (interactive)
-  (when (and (boundp 'ediff-buffer-A) (buffer-live-p ediff-buffer-A))
-    (setq diff-minimap--ediff-control-buffer (current-buffer))
-    ;; Inline hunks would mask Ediff's own highlights.  Hide them for the
-    ;; session, but keep `diff-minimap--inline-active' so they come back
-    ;; when the Ediff windows are left.
-    (diff-minimap--suspend-ediff-inline-hunks)
-    (unless (get-buffer-window diff-minimap--buffer-name)
-      (diff-minimap-mode 1)
-      (run-with-idle-timer 0 nil
-        (lambda ()
-          (let* ((ed-ctrl diff-minimap--ediff-control-buffer)
-                 (a-b (and ed-ctrl (buffer-live-p ed-ctrl) (with-current-buffer ed-ctrl (and (boundp 'ediff-buffer-A) ediff-buffer-A))))
-                 (b-b (and ed-ctrl (buffer-live-p ed-ctrl) (with-current-buffer ed-ctrl (and (boundp 'ediff-buffer-B) ediff-buffer-B))))
-                 (c-b (and ed-ctrl (buffer-live-p ed-ctrl) (with-current-buffer ed-ctrl (and (boundp 'ediff-buffer-C) ediff-buffer-C)))))
-            (when (and a-b b-b (not (get-buffer-window diff-minimap--buffer-name 0)))
-              (let ((win (or (get-buffer-window a-b 0)
-                             (get-buffer-window b-b 0)
-                             (get-buffer-window c-b 0))))
-                (when win
-                  (with-selected-window win
-                    (setq diff-minimap--sidebar-intended t)
-                    (diff-minimap--open-sidebar)))))))))))
+  (let ((session-buffers
+         (delq nil
+               (list (and (boundp 'ediff-buffer-A)
+                          (buffer-live-p ediff-buffer-A)
+                          ediff-buffer-A)
+                     (and (boundp 'ediff-buffer-B)
+                          (buffer-live-p ediff-buffer-B)
+                          ediff-buffer-B)
+                     (and (boundp 'ediff-buffer-C)
+                          (buffer-live-p ediff-buffer-C)
+                          ediff-buffer-C)))))
+    (when (cl-some (lambda (buf)
+                     (buffer-local-value 'diff-minimap-mode buf))
+                   session-buffers)
+      (setq diff-minimap--ediff-control-buffer (current-buffer))
+      ;; Inline hunks would mask Ediff's own highlights.  Hide them for the
+      ;; session, but keep `diff-minimap--inline-active' so they come back
+      ;; when the Ediff windows are left.
+      (diff-minimap--suspend-ediff-inline-hunks)
+      (unless (get-buffer-window diff-minimap--buffer-name)
+        (run-with-idle-timer 0 nil
+          (lambda ()
+            (let* ((ed-ctrl diff-minimap--ediff-control-buffer)
+                   (a-b (and ed-ctrl (buffer-live-p ed-ctrl) (with-current-buffer ed-ctrl (and (boundp 'ediff-buffer-A) ediff-buffer-A))))
+                   (b-b (and ed-ctrl (buffer-live-p ed-ctrl) (with-current-buffer ed-ctrl (and (boundp 'ediff-buffer-B) ediff-buffer-B))))
+                   (c-b (and ed-ctrl (buffer-live-p ed-ctrl) (with-current-buffer ed-ctrl (and (boundp 'ediff-buffer-C) ediff-buffer-C)))))
+              (when (and a-b b-b (not (get-buffer-window diff-minimap--buffer-name 0)))
+                (let ((win (or (get-buffer-window a-b 0)
+                               (get-buffer-window b-b 0)
+                               (get-buffer-window c-b 0))))
+                  (when win
+                    (with-selected-window win
+                      (when (bound-and-true-p diff-minimap-mode)
+                        (setq diff-minimap--sidebar-intended t)
+                        (diff-minimap--open-sidebar)))))))))))))
 
 (defun diff-minimap-ediff-teardown ()
-  "Hide the minimap when Ediff quits and restore the pre-Ediff state."
-  (let ((prev diff-minimap--ediff-prev-sidebar-intended))
+  "Hide the minimap when Ediff quits.
+The file buffers keep their buffer-local `diff-minimap-mode' state;
+the sidebar is re-opened by the next command when an enabled file is
+selected again."
+  (when diff-minimap--ediff-control-buffer
     (setq diff-minimap--ediff-control-buffer nil
-          diff-minimap--ediff-prev-sidebar-intended nil
           diff-minimap--ediff-visible nil)
     (when (get-buffer-window diff-minimap--buffer-name 0)
-      (diff-minimap--close-sidebar))
-    (setq diff-minimap--sidebar-intended prev)
-    (unless (or prev
-                (cl-some (lambda (buf)
-                           (buffer-local-value 'diff-minimap--inline-active buf))
-                         (buffer-list)))
-      (diff-minimap-mode -1))))
+      (diff-minimap--close-sidebar))))
 
 (defun diff-minimap-ediff-debug ()
   "Print diagnostic info about the Ediff dual-column minimap state.
@@ -1935,6 +1971,7 @@ buffer) while an Ediff session is active."
   (when (and diff-minimap-search-highlights
              isearch-mode
              (not (string-empty-p isearch-string))
+             (eq (current-buffer) diff-minimap--last-buffer)
              (get-buffer-window diff-minimap--buffer-name))
     (let ((mm-buf (get-buffer diff-minimap--buffer-name)))
       (when (and mm-buf diff-minimap--last-nrows)
@@ -1962,6 +1999,7 @@ buffer) while an Ediff session is active."
   "Move point to the next diff hunk.
 Uses the configured `diff-minimap-diff-backend' to find hunks."
   (interactive)
+  (diff-minimap--ensure-mode)
   (let* ((data (diff-minimap--collect-diff-data))
          (current (line-number-at-pos))
          (next (catch 'found
@@ -1988,6 +2026,7 @@ Uses the configured `diff-minimap-diff-backend' to find hunks."
   "Move point to the previous diff hunk.
 Uses the configured `diff-minimap-diff-backend' to find hunks."
   (interactive)
+  (diff-minimap--ensure-mode)
   (let* ((data (diff-minimap--collect-diff-data))
          (current (line-number-at-pos))
          (prev nil))
@@ -2018,7 +2057,8 @@ Uses the configured `diff-minimap-diff-backend' to find hunks."
 (defun diff-minimap--before-vc-diff (&rest _)
   "Save current buffer and line before `vc-diff'."
   (setq diff-minimap--vc-diff-context
-        (cons (current-buffer) (line-number-at-pos))))
+        (and (bound-and-true-p diff-minimap-mode)
+             (cons (current-buffer) (line-number-at-pos)))))
 
 (defun diff-minimap--after-vc-diff (&rest _)
   "After `vc-diff', jump to the hunk line matching the saved source line."
@@ -2083,70 +2123,113 @@ file keep their normal bindings."
           '(menu-item "" diff-minimap-next-hunk :filter diff-minimap--file-buffer-filter))
         (define-key map (kbd "M-S-<f5>")
           '(menu-item "" diff-minimap-previous-hunk :filter diff-minimap--file-buffer-filter))
+        (define-key map (kbd "C-x v ]")
+          '(menu-item "" diff-minimap-next-hunk :filter diff-minimap--file-buffer-filter))
+        (define-key map (kbd "C-x v [")
+          '(menu-item "" diff-minimap-previous-hunk :filter diff-minimap--file-buffer-filter))
         map))
 
-;;;###autoload
-(define-minor-mode diff-minimap-mode
-  "Global minor mode keeping the diff minimap in sync.
-When active, the minimap follows the selected buffer and updates on
-scroll, edit, save, buffer switch, and hunk navigation — no need to
-toggle per buffer.  The sidebar is only shown for buffers with local
-changes.  When `diff-minimap-inline-preview' is non-nil, opening the
-minimap and hunk navigation show editable inline diffs; `C-c r' reverts
-the hunk at point to its HEAD text without saving.
-\\{diff-minimap-mode-map}"
-  :lighter " DMap"
-  :global t
-  :keymap diff-minimap-mode-map
-  (if diff-minimap-mode
-      (progn
-        (add-hook 'post-command-hook #'diff-minimap--post-command)
-        (add-hook 'after-change-functions #'diff-minimap--after-change)
-        (add-hook 'after-save-hook #'diff-minimap--after-save)
-        (add-hook 'after-save-hook #'diff-minimap--refresh-inline-hunk)
-        (add-hook 'isearch-update-post-hook #'diff-minimap--search-update)
-        (add-hook 'isearch-mode-end-hook #'diff-minimap--search-clear)
-        (advice-add 'vc-diff :before #'diff-minimap--before-vc-diff)
-        (advice-add 'vc-diff :after #'diff-minimap--after-vc-diff)
-        (add-hook 'ediff-startup-hook #'diff-minimap-ediff-setup)
-        (add-hook 'ediff-quit-hook #'diff-minimap-ediff-teardown)
-        (if (fboundp 'ediff-setup)
-            (diff-minimap--ensure-ediff-advice)
-          (with-eval-after-load 'ediff
-            (diff-minimap--ensure-ediff-advice))))
+(defun diff-minimap--any-enabled-buffer-p (&optional excluding)
+  "Return non-nil when a live buffer other than EXCLUDING enables the mode."
+  (cl-some (lambda (buf)
+             (and (buffer-live-p buf)
+                  (not (eq buf excluding))
+                  (buffer-local-value 'diff-minimap-mode buf)))
+           (buffer-list)))
+
+(defun diff-minimap--install-global-integration ()
+  "Install the global hooks and advice shared by enabled buffers."
+  (unless diff-minimap--global-hooks-installed
+    (add-hook 'post-command-hook #'diff-minimap--post-command)
+    (add-hook 'ediff-startup-hook #'diff-minimap-ediff-setup)
+    (add-hook 'ediff-quit-hook #'diff-minimap-ediff-teardown)
+    (advice-add 'vc-diff :before #'diff-minimap--before-vc-diff)
+    (advice-add 'vc-diff :after #'diff-minimap--after-vc-diff)
+    (if (fboundp 'ediff-setup)
+        (diff-minimap--ensure-ediff-advice)
+      (with-eval-after-load 'ediff
+        (diff-minimap--ensure-ediff-advice)))
+    (setq diff-minimap--global-hooks-installed t)))
+
+(defun diff-minimap--remove-global-integration ()
+  "Remove the global hooks and advice when no buffer enables the mode."
+  (when diff-minimap--global-hooks-installed
     (remove-hook 'post-command-hook #'diff-minimap--post-command)
-    (remove-hook 'after-change-functions #'diff-minimap--after-change)
-    (remove-hook 'after-save-hook #'diff-minimap--after-save)
-    (remove-hook 'after-save-hook #'diff-minimap--refresh-inline-hunk)
-    (remove-hook 'isearch-update-post-hook #'diff-minimap--search-update)
-    (remove-hook 'isearch-mode-end-hook #'diff-minimap--search-clear)
     (remove-hook 'ediff-startup-hook #'diff-minimap-ediff-setup)
     (remove-hook 'ediff-quit-hook #'diff-minimap-ediff-teardown)
     (advice-remove 'vc-diff #'diff-minimap--before-vc-diff)
     (advice-remove 'vc-diff #'diff-minimap--after-vc-diff)
     (diff-minimap--remove-ediff-advice)
-    (setq diff-minimap--sidebar-intended nil
+    (setq diff-minimap--global-hooks-installed nil
           diff-minimap--ediff-control-buffer nil
-          diff-minimap--ediff-prev-sidebar-intended nil
-          diff-minimap--ediff-visible nil)
-    (diff-minimap--close-sidebar)
-    (dolist (buf (buffer-list))
-      (with-current-buffer buf
-        (when (timerp diff-minimap--live-diff-timer)
-          (cancel-timer diff-minimap--live-diff-timer)
-          (setq diff-minimap--live-diff-timer nil))
-        (diff-minimap--remove-hunk-overlays)
-        (diff-minimap--fringe-clear)
-        (setq diff-minimap--inline-active nil
-              diff-minimap--inline-suspended nil)))
-    (setq diff-minimap--last-buffer nil)))
+          diff-minimap--ediff-visible nil)))
+
+(defun diff-minimap--maybe-remove-global-integration (&optional excluding)
+  "Remove shared integration when no buffer except EXCLUDING enables the mode."
+  (unless (diff-minimap--any-enabled-buffer-p excluding)
+    (when (get-buffer-window diff-minimap--buffer-name 0)
+      (diff-minimap--close-sidebar))
+    (diff-minimap--remove-global-integration)))
+
+(defun diff-minimap--buffer-killed ()
+  "Clean up timers and the sidebar when an enabled buffer is killed."
+  (when (timerp diff-minimap--live-diff-timer)
+    (cancel-timer diff-minimap--live-diff-timer)
+    (setq diff-minimap--live-diff-timer nil))
+  (when (eq diff-minimap--last-buffer (current-buffer))
+    (diff-minimap--close-sidebar))
+  (diff-minimap--maybe-remove-global-integration (current-buffer)))
+
+;;;###autoload
+(define-minor-mode diff-minimap-mode
+  "Buffer-local minor mode keeping the diff minimap in sync.
+When enabled, the minimap follows this buffer and updates on scroll,
+edit, save, and hunk navigation.  The sidebar is only shown for
+buffers with local changes.  The mode is buffer-local: other buffers
+are unaffected and must enable it themselves.  When
+`diff-minimap-inline-preview' is non-nil, opening the minimap and hunk
+navigation show editable inline diffs; `C-c r' reverts the hunk at
+point to its HEAD text without saving.
+\\{diff-minimap-mode-map}"
+  :lighter " DMap"
+  :keymap diff-minimap-mode-map
+  (if diff-minimap-mode
+      (progn
+        (setq diff-minimap--sidebar-intended t)
+        (add-hook 'after-change-functions #'diff-minimap--after-change nil t)
+        (add-hook 'after-save-hook #'diff-minimap--after-save nil t)
+        (add-hook 'after-save-hook #'diff-minimap--refresh-inline-hunk nil t)
+        (add-hook 'isearch-update-post-hook #'diff-minimap--search-update nil t)
+        (add-hook 'isearch-mode-end-hook #'diff-minimap--search-clear nil t)
+        (add-hook 'kill-buffer-hook #'diff-minimap--buffer-killed nil t)
+        (diff-minimap--install-global-integration)
+        (diff-minimap--activate-buffer))
+    (remove-hook 'after-change-functions #'diff-minimap--after-change t)
+    (remove-hook 'after-save-hook #'diff-minimap--after-save t)
+    (remove-hook 'after-save-hook #'diff-minimap--refresh-inline-hunk t)
+    (remove-hook 'isearch-update-post-hook #'diff-minimap--search-update t)
+    (remove-hook 'isearch-mode-end-hook #'diff-minimap--search-clear t)
+    (remove-hook 'kill-buffer-hook #'diff-minimap--buffer-killed t)
+    (when (timerp diff-minimap--live-diff-timer)
+      (cancel-timer diff-minimap--live-diff-timer)
+      (setq diff-minimap--live-diff-timer nil))
+    (diff-minimap--remove-hunk-overlays)
+    (diff-minimap--fringe-clear)
+    (setq diff-minimap--sidebar-intended nil
+          diff-minimap--inline-active nil
+          diff-minimap--inline-suspended nil)
+    (when (and (get-buffer-window diff-minimap--buffer-name 0)
+               (or (eq diff-minimap--last-buffer (current-buffer))
+                   (eq (current-buffer) (window-buffer (selected-window)))))
+      (diff-minimap--close-sidebar))
+    (diff-minimap--maybe-remove-global-integration)))
 
 ;;
 ;; Do not bind `C-x v m' or `C-x v M' here: they are stock VC keys
 ;; (`vc-merge' and the `vc-diff-mergebase'/`vc-log-mergebase' prefix).
 ;; Toggle the minimap from `M-x diff-minimap-toggle' or bind it yourself.
-(define-key vc-prefix-map (kbd "]") #'diff-minimap-next-hunk)
-(define-key vc-prefix-map (kbd "[") #'diff-minimap-previous-hunk)
+;; Hunk navigation (`C-x v ]'/`C-x v [') lives in `diff-minimap-mode-map'
+;; so it only applies in buffers where the mode is enabled.
 
 (defvar diff-minimap-hunk-repeat-map
   (let ((map (make-sparse-keymap)))
@@ -2211,7 +2294,8 @@ back after the Ediff windows are left."
 Does nothing while the Ediff windows are visible."
   (when diff-minimap--inline-suspended
     (cond
-     ((not diff-minimap--inline-active)
+     ((or (not diff-minimap--inline-active)
+          (not (bound-and-true-p diff-minimap-mode)))
       (setq diff-minimap--inline-suspended nil))
      ((not (diff-minimap--ediff-session-visible-p))
       (setq diff-minimap--inline-suspended nil)
@@ -2228,16 +2312,15 @@ closed first.  It will be re-opened by `ediff-startup-hook' via
 `diff-minimap-ediff-setup'.  Only the sidebar is closed here;
 inline hunks are suspended by the startup hook and restored when
 the Ediff windows are left."
-  (setq diff-minimap--ediff-prev-sidebar-intended diff-minimap--sidebar-intended
-        diff-minimap--sidebar-intended nil)
   (when (get-buffer-window diff-minimap--buffer-name 0)
     (diff-minimap--close-sidebar)))
 
 (defun diff-minimap--ensure-ediff-advice ()
   "Install `:before' advice on `ediff-setup' if not already done."
-  (unless diff-minimap--ediff-advised
-    (advice-add 'ediff-setup :before #'diff-minimap--before-ediff-setup)
-    (setq diff-minimap--ediff-advised t)))
+  (when (diff-minimap--any-enabled-buffer-p)
+    (unless diff-minimap--ediff-advised
+      (advice-add 'ediff-setup :before #'diff-minimap--before-ediff-setup)
+      (setq diff-minimap--ediff-advised t))))
 
 (defun diff-minimap--remove-ediff-advice ()
   "Remove the `:before' advice on `ediff-setup'."
