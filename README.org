@@ -133,7 +133,12 @@ panel.
   (=ediff-current-diff-*=), ensuring they match your theme's Ediff
   highlights.
 
-The minimap automatically hides when the Ediff session is closed.
+Inline diff previews are suspended while the Ediff windows are visible,
+so they do not mask Ediff's own highlights.  Leaving the Ediff windows
+(for example with =tab-bar-history-back=) restores them without quitting
+the session, and returning to Ediff suspends them again.  When the Ediff
+session is closed, the minimap hides and the sidebar state from before
+Ediff is restored.
 
 * Viewport styles
 

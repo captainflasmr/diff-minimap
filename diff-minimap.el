@@ -1,7 +1,7 @@
 ;;; diff-minimap.el --- VSCode-style minimap showing diff regions -*- lexical-binding: t; -*-
 ;;
 ;; Author: James Dyer <captainflasmr@gmail.com>
-;; Version: 0.11.0
+;; Version: 0.11.1
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: vc, tools, convenience
 ;; URL: https://github.com/captainflasmr/diff-minimap
@@ -243,6 +243,12 @@ text to its original state removes the inline hunks without saving."
 (defvar-local diff-minimap--inline-active nil
   "Whether this buffer should keep inline hunks in sync with edits.")
 
+(defvar-local diff-minimap--inline-suspended nil
+  "Non-nil when inline hunks were hidden for an Ediff session.
+The hunks are restored when the buffer is shown outside the Ediff
+windows, so leaving the session with `tab-bar-history-back' brings
+them back.")
+
 (defvar diff-minimap--sidebar-intended nil
   "Whether the user wants the minimap sidebar shown.
 The sidebar is hidden for buffers without local changes while this
@@ -274,6 +280,12 @@ remains non-nil, so switching back to a changed file restores it.")
 
 (defvar diff-minimap--ediff-control-buffer nil
   "The active Ediff control buffer if rendering a dual-column minimap.")
+
+(defvar diff-minimap--ediff-prev-sidebar-intended nil
+  "Value of `diff-minimap--sidebar-intended' before the Ediff session.")
+
+(defvar diff-minimap--ediff-visible nil
+  "Whether the current Ediff session was visible at the last command.")
 
 ;; Cached face colours — recomputed in `diff-minimap--cache-faces'.
 (defvar diff-minimap--norm-bg "#1a1a1a")
@@ -1120,6 +1132,18 @@ registered with `get-buffer-window'."
 Detects buffer switches, shows the sidebar only for buffers with local
 changes, and clears it when entering a buffer without changes or a diff
 backend."
+  ;; Ediff hides inline hunks while its own windows are visible.  Restore
+  ;; them as soon as the user leaves the Ediff windows (for example with
+  ;; `tab-bar-history-back'), and hide them again when returning.
+  (when diff-minimap--inline-suspended
+    (diff-minimap--restore-suspended-inline-hunks))
+  (let ((ediff-visible (diff-minimap--ediff-session-visible-p)))
+    (when (and ediff-visible
+               (or (not diff-minimap--ediff-visible)
+                   (memq (current-buffer)
+                         (diff-minimap--ediff-session-buffers))))
+      (diff-minimap--suspend-ediff-inline-hunks))
+    (setq diff-minimap--ediff-visible ediff-visible))
   (when (or (get-buffer-window diff-minimap--buffer-name 0)
             diff-minimap--sidebar-intended)
     (let ((buf (current-buffer))
@@ -1820,6 +1844,10 @@ buffer without changes, opening it is refused."
   (interactive)
   (when (and (boundp 'ediff-buffer-A) (buffer-live-p ediff-buffer-A))
     (setq diff-minimap--ediff-control-buffer (current-buffer))
+    ;; Inline hunks would mask Ediff's own highlights.  Hide them for the
+    ;; session, but keep `diff-minimap--inline-active' so they come back
+    ;; when the Ediff windows are left.
+    (diff-minimap--suspend-ediff-inline-hunks)
     (unless (get-buffer-window diff-minimap--buffer-name)
       (diff-minimap-mode 1)
       (run-with-idle-timer 0 nil
@@ -1834,13 +1862,23 @@ buffer without changes, opening it is refused."
                              (get-buffer-window c-b 0))))
                 (when win
                   (with-selected-window win
-                    (diff-minimap-toggle)))))))))))
+                    (setq diff-minimap--sidebar-intended t)
+                    (diff-minimap--open-sidebar)))))))))))
 
 (defun diff-minimap-ediff-teardown ()
-  "Hide the minimap when Ediff quits."
-  (setq diff-minimap--ediff-control-buffer nil)
-  (when (get-buffer-window diff-minimap--buffer-name 0)
-    (diff-minimap-toggle)))
+  "Hide the minimap when Ediff quits and restore the pre-Ediff state."
+  (let ((prev diff-minimap--ediff-prev-sidebar-intended))
+    (setq diff-minimap--ediff-control-buffer nil
+          diff-minimap--ediff-prev-sidebar-intended nil
+          diff-minimap--ediff-visible nil)
+    (when (get-buffer-window diff-minimap--buffer-name 0)
+      (diff-minimap--close-sidebar))
+    (setq diff-minimap--sidebar-intended prev)
+    (unless (or prev
+                (cl-some (lambda (buf)
+                           (buffer-local-value 'diff-minimap--inline-active buf))
+                         (buffer-list)))
+      (diff-minimap-mode -1))))
 
 (defun diff-minimap-ediff-debug ()
   "Print diagnostic info about the Ediff dual-column minimap state.
@@ -2087,7 +2125,10 @@ the hunk at point to its HEAD text without saving.
     (advice-remove 'vc-diff #'diff-minimap--before-vc-diff)
     (advice-remove 'vc-diff #'diff-minimap--after-vc-diff)
     (diff-minimap--remove-ediff-advice)
-    (setq diff-minimap--sidebar-intended nil)
+    (setq diff-minimap--sidebar-intended nil
+          diff-minimap--ediff-control-buffer nil
+          diff-minimap--ediff-prev-sidebar-intended nil
+          diff-minimap--ediff-visible nil)
     (diff-minimap--close-sidebar)
     (dolist (buf (buffer-list))
       (with-current-buffer buf
@@ -2096,7 +2137,8 @@ the hunk at point to its HEAD text without saving.
           (setq diff-minimap--live-diff-timer nil))
         (diff-minimap--remove-hunk-overlays)
         (diff-minimap--fringe-clear)
-        (setq diff-minimap--inline-active nil)))
+        (setq diff-minimap--inline-active nil
+              diff-minimap--inline-suspended nil)))
     (setq diff-minimap--last-buffer nil)))
 
 ;;
@@ -2124,14 +2166,72 @@ When `repeat-mode' is enabled, after `C-x v ]' or `C-x v [', pressing
 (defvar diff-minimap--ediff-advised nil
   "Whether `ediff-setup' has been advised to close the minimap.")
 
+(defun diff-minimap--ediff-session-buffers ()
+  "Return the live buffers that belong to the current Ediff session."
+  (when (and diff-minimap--ediff-control-buffer
+             (buffer-live-p diff-minimap--ediff-control-buffer))
+    (with-current-buffer diff-minimap--ediff-control-buffer
+      (delq nil
+            (list (and (bound-and-true-p ediff-buffer-A)
+                       (buffer-live-p ediff-buffer-A)
+                       ediff-buffer-A)
+                  (and (bound-and-true-p ediff-buffer-B)
+                       (buffer-live-p ediff-buffer-B)
+                       ediff-buffer-B)
+                  (and (bound-and-true-p ediff-buffer-C)
+                       (buffer-live-p ediff-buffer-C)
+                       ediff-buffer-C))))))
+
+(defun diff-minimap--ediff-session-visible-p ()
+  "Return non-nil when the current Ediff session is visible.
+Only windows in the selected frame and tab are considered, so
+leaving the Ediff tab with `tab-bar-history-back' counts as
+leaving the session even though its control buffer is still live."
+  (and diff-minimap--ediff-control-buffer
+       (buffer-live-p diff-minimap--ediff-control-buffer)
+       (get-buffer-window diff-minimap--ediff-control-buffer)))
+
+(defun diff-minimap--suspend-ediff-inline-hunks ()
+  "Hide inline hunks in the current Ediff session's buffers.
+The buffers keep `diff-minimap--inline-active' and record the
+suspension in `diff-minimap--inline-suspended', so
+`diff-minimap--restore-suspended-inline-hunks' can bring the hunks
+back after the Ediff windows are left."
+  (dolist (buf (diff-minimap--ediff-session-buffers))
+    (with-current-buffer buf
+      (when (and diff-minimap--inline-active
+                 (not diff-minimap--inline-suspended)
+                 (cl-some (lambda (ov) (overlay-get ov 'diff-minimap-hunk))
+                          (overlays-in (point-min) (point-max))))
+        (diff-minimap--remove-hunk-overlays)
+        (setq diff-minimap--inline-suspended t)))))
+
+(defun diff-minimap--restore-suspended-inline-hunks ()
+  "Restore inline hunks hidden for Ediff in the current buffer.
+Does nothing while the Ediff windows are visible."
+  (when diff-minimap--inline-suspended
+    (cond
+     ((not diff-minimap--inline-active)
+      (setq diff-minimap--inline-suspended nil))
+     ((not (diff-minimap--ediff-session-visible-p))
+      (setq diff-minimap--inline-suspended nil)
+      ;; Inline hunks are git-only; ignore the Ediff backend here so the
+      ;; hunk line numbers match the git patch even while the Ediff
+      ;; control buffer is still live.
+      (let ((diff-minimap-diff-backend 'vc))
+        (diff-minimap--show-all-inline-hunks))))))
+
 (defun diff-minimap--before-ediff-setup (&rest _)
   "Close the minimap before ediff creates its window layout.
 Side windows cannot be split by ediff, so the minimap must be
 closed first.  It will be re-opened by `ediff-startup-hook' via
-`diff-minimap-ediff-setup'."
-  (when-let ((mm-buf (get-buffer diff-minimap--buffer-name))
-             (win (get-buffer-window mm-buf)))
-    (diff-minimap-toggle)))
+`diff-minimap-ediff-setup'.  Only the sidebar is closed here;
+inline hunks are suspended by the startup hook and restored when
+the Ediff windows are left."
+  (setq diff-minimap--ediff-prev-sidebar-intended diff-minimap--sidebar-intended
+        diff-minimap--sidebar-intended nil)
+  (when (get-buffer-window diff-minimap--buffer-name 0)
+    (diff-minimap--close-sidebar)))
 
 (defun diff-minimap--ensure-ediff-advice ()
   "Install `:before' advice on `ediff-setup' if not already done."

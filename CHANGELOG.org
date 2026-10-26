@@ -10,6 +10,15 @@ This document contains the release notes for diff-minimap.
 
 * Versions
 
+** 0.11.1 — <2026-10-26>
+
+Keep inline hunks across Ediff sessions.
+
+- Opening Ediff no longer clears inline hunks or disables =diff-minimap-mode=.  The pre-Ediff advice now only closes the sidebar; the Ediff startup hook suspends inline previews in buffers A/B/C (removing the overlays but keeping =diff-minimap--inline-active=).
+- Inline hunks are restored as soon as the Ediff windows are no longer visible in the selected tab, so returning with =tab-bar-history-back= brings them back without quitting the Ediff session.  Returning to the Ediff tab suspends them again.
+- =ediff-quit-hook= restores the pre-Ediff sidebar state instead of always closing the minimap, so a minimap that was open before Ediff reopens when you return to the file buffer.
+- Restoring inline hunks uses the git/VC data even when the =auto= backend would otherwise prefer Ediff's overlays, keeping hunk line numbers aligned with the patch.
+
 ** 0.11.0 — <2026-10-26>
 
 Revert hunks inline.
