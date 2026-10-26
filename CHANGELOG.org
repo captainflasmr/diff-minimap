@@ -10,6 +10,14 @@ This document contains the release notes for diff-minimap.
 
 * Versions
 
+** 0.11.0 — <2026-10-26>
+
+Revert hunks inline.
+
+- Add =diff-minimap-revert-hunk= (bound to =C-c r= in =diff-minimap-mode-map=).  It restores the change group at point to its =HEAD= text in place, without opening =vc-diff= and without saving the buffer.  Added/changed lines are replaced by the original text, removed virtual lines become ordinary buffer text again, and =undo= restores the reverted hunk.
+- Refresh inline hunks and the minimap immediately after an explicit revert, even when =diff-minimap-live-diff= is =nil=.  The refresh compares =HEAD= with the unsaved buffer so the reverted hunk disappears right away; if no changes remain, the sidebar closes.
+- Preserve a missing final newline when restoring a hunk at end-of-file by keeping git's =\\ No newline at end of file= marker with the change group.
+
 ** 0.10.0 — <2026-10-24>
 
 Live diff updates while typing.

@@ -1,7 +1,7 @@
 ;;; diff-minimap.el --- VSCode-style minimap showing diff regions -*- lexical-binding: t; -*-
 ;;
 ;; Author: James Dyer <captainflasmr@gmail.com>
-;; Version: 0.10.0
+;; Version: 0.11.0
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: vc, tools, convenience
 ;; URL: https://github.com/captainflasmr/diff-minimap
@@ -32,6 +32,7 @@
 ;;   (require 'diff-minimap)
 ;;   M-x diff-minimap-toggle      ;; open/close the minimap
 ;;   C-x v ] / C-x v [            ;; step through diff hunks
+;;   C-c r                        ;; revert the hunk at point inline
 ;;
 ;; The toggle is deliberately left unbound so loading the package does not
 ;; shadow stock VC keys (`C-x v m' is `vc-merge').  Bind it in your own
@@ -39,7 +40,8 @@
 ;; hunk inline; removed lines are read-only virtual text, while
 ;; added/changed lines stay in the buffer and can be edited in place.  The
 ;; diff updates live as you type, and reverting text to HEAD removes the
-;; inline hunk.  The minimap auto-refreshes on scroll and save.  Click a
+;; inline hunk.  `C-c r' restores the hunk at point to its HEAD text
+;; without saving.  The minimap auto-refreshes on scroll and save.  Click a
 ;; row in the minimap to jump to that line in the source buffer, drag with
 ;; mouse-1 to scrub the source view, or use the wheel / two-finger scroll
 ;; over the minimap to scroll the source buffer.
@@ -1328,7 +1330,9 @@ Returns the hunk text as a string, or nil if not found."
 (defun diff-minimap--extract-sub-hunk (hunk-text target-line)
   "From unified diff HUNK-TEXT, extract only the changes (+) and deletions (-)
 containing or nearest to TARGET-LINE (new-file line number).
-Context lines (starting with ' ') are strictly excluded."
+Context lines (starting with ' ') are strictly excluded.  No-newline
+markers are kept with their change group so reverting can reproduce a
+missing final newline."
   (let* ((lines (split-string hunk-text "\n"))
          (header (car lines))
          (body (cdr lines))
@@ -1356,6 +1360,10 @@ Context lines (starting with ' ') are strictly excluded."
             (unless cur-start (setq cur-start new-line))
             (push line cur-lines)
             (cl-incf new-line))
+           ((string= char "\\")
+            ;; No-newline marker: keep it with the group it belongs to.
+            (when cur-lines
+              (push line cur-lines)))
            (t nil))))
       ;; Capture last group
       (when cur-lines
@@ -1368,18 +1376,27 @@ Context lines (starting with ' ') are strictly excluded."
         (if selected
             (string-join (cons header (nth 2 selected)) "\n")
           ;; Fallback: show all diff lines if no specific group matched
-          (let ((diff-lines (cl-remove-if-not (lambda (l) (string-match-p "^[-+]" l)) body)))
+          (let ((diff-lines
+                 (cl-remove-if-not
+                  (lambda (l)
+                    (and (> (length l) 0)
+                         (memq (aref l 0) '(?- ?+ ?\\))))
+                  body)))
             (string-join (cons header diff-lines) "\n")))))))
 
 (defun diff-minimap--parse-inline-hunk (narrowed)
-  "Return (OLD-LINES NEW-START NEW-COUNT) parsed from NARROWED.
+  "Return (OLD-LINES NEW-START NEW-COUNT OLD-NO-NEWLINE) parsed from NARROWED.
 NARROWED is a unified diff sub-hunk as returned by
 `diff-minimap--extract-sub-hunk' — a header followed only by
-removed and added lines."
+removed and added lines.  OLD-NO-NEWLINE is non-nil when the removed
+text ended without a final newline (a no-newline marker follows a
+removed line)."
   (let ((lines (split-string narrowed "\n" t))
         (old-lines nil)
         (new-start 1)
-        (new-count 1))
+        (new-count 1)
+        (last-prefix nil)
+        (old-no-newline nil))
     (when (and lines
                (string-match
                 "^@@ -[0-9]+\\(?:,[0-9]+\\)? \\+\\([0-9]+\\)\\(?:,\\([0-9]+\\)\\)? @@"
@@ -1389,10 +1406,62 @@ removed and added lines."
                           (string-to-number (match-string 2 (car lines)))
                         1)))
     (dolist (line (cdr lines))
-      (when (and (> (length line) 0)
-                 (eq (aref line 0) ?-))
-        (push (substring line 1) old-lines)))
-    (list (nreverse old-lines) new-start new-count)))
+      (when (> (length line) 0)
+        (let ((prefix (aref line 0)))
+          (cond
+           ((eq prefix ?\\)
+            (when (eq last-prefix ?-)
+              (setq old-no-newline t)))
+           (t
+            (setq last-prefix prefix)
+            (when (eq prefix ?-)
+              (push (substring line 1) old-lines)))))))
+    (list (nreverse old-lines) new-start new-count old-no-newline)))
+
+(defun diff-minimap--change-region-at-line (line &optional full-patch)
+  "Return the diff change region at LINE in the current buffer.
+The value has the form (OLD-LINES NEW-START NEW-COUNT
+OLD-NO-NEWLINE) as returned by `diff-minimap--parse-inline-hunk',
+or nil when LINE is not part of a diff change.  FULL-PATCH, when
+non-nil, is a unified diff to use instead of running git again."
+  (when-let* ((file (buffer-file-name))
+              (patch (or full-patch (diff-minimap--current-patch file)))
+              (hunk (diff-minimap--extract-hunk-from-patch patch line))
+              (narrowed (diff-minimap--extract-sub-hunk hunk line)))
+    (diff-minimap--parse-inline-hunk narrowed)))
+
+(defun diff-minimap--revert-change-region (region)
+  "Restore the original text of the diff change described by REGION.
+REGION is (OLD-LINES NEW-START NEW-COUNT OLD-NO-NEWLINE) as returned
+by `diff-minimap--change-region-at-line'.  The buffer is modified but
+not saved; undo restores the reverted text."
+  (let* ((old-lines (nth 0 region))
+         (new-start (nth 1 region))
+         (new-count (nth 2 region))
+         (old-no-newline (nth 3 region))
+         (start-line (max 1 (if (zerop new-count)
+                                (1+ new-start)
+                              new-start)))
+         (text (and old-lines (mapconcat #'identity old-lines "\n"))))
+    (save-excursion
+      (goto-char (point-min))
+      (forward-line (1- start-line))
+      (let ((beg (point))
+            (end (if (> new-count 0)
+                     (progn (forward-line new-count) (point))
+                   (point))))
+        (when text
+          ;; Lines in the middle of a file end with a newline.  Only the
+          ;; final line of the original file may lack one.
+          (unless old-no-newline
+            (setq text (concat text "\n")))
+          ;; Inserting whole lines at an unterminated final line needs a
+          ;; separator before the restored text.
+          (when (and (zerop new-count) (not (bolp)))
+            (setq text (concat "\n" text))))
+        (delete-region beg end)
+        (when text (insert text))
+        t))))
 
 (defun diff-minimap--delete-hunk-overlay (ov)
   "Delete inline hunk overlay OV and release its saved marker."
@@ -1479,13 +1548,15 @@ Existing inline hunks are left alone; missing ones are added."
         (ignore-errors
           (diff-minimap--show-hunk-overlay hunk (nth 1 hunk) full-patch))))))
 
-(defun diff-minimap--refresh-live-diff ()
-  "Recompute inline hunks and the minimap from the current buffer text."
-  (when (and (bound-and-true-p diff-minimap-mode)
-             diff-minimap-live-diff
-             (buffer-file-name)
-             (not (string-prefix-p " " (buffer-name)))
-             (not diff-minimap--ediff-control-buffer))
+(defun diff-minimap--refresh-display (&optional use-buffer-diff)
+  "Recompute inline hunks and the minimap from the current buffer text.
+Unlike `diff-minimap--refresh-live-diff', this does not consult
+`diff-minimap-live-diff', so explicit edits such as reverting a hunk
+refresh the display immediately.  When USE-BUFFER-DIFF is non-nil,
+compare HEAD with the unsaved buffer text instead of the saved file,
+so an explicit revert is reflected even if `diff-minimap-live-diff'
+is nil."
+  (let ((diff-minimap-live-diff (or use-buffer-diff diff-minimap-live-diff)))
     (when diff-minimap--inline-active
       (diff-minimap--remove-hunk-overlays)
       (diff-minimap--show-all-inline-hunks))
@@ -1504,6 +1575,15 @@ Existing inline hunks are left alone; missing ones are added."
         (diff-minimap--fringe-clear)
         (when (get-buffer-window diff-minimap--buffer-name 0)
           (diff-minimap--close-sidebar)))))))
+
+(defun diff-minimap--refresh-live-diff ()
+  "Recompute inline hunks and the minimap from the current buffer text."
+  (when (and (bound-and-true-p diff-minimap-mode)
+             diff-minimap-live-diff
+             (buffer-file-name)
+             (not (string-prefix-p " " (buffer-name)))
+             (not diff-minimap--ediff-control-buffer))
+    (diff-minimap--refresh-display)))
 
 (defun diff-minimap--after-change (&rest _)
   "Schedule a live diff refresh after the buffer text changes."
@@ -1561,6 +1641,30 @@ alone; use `diff-minimap-show-all-hunks' to toggle every hunk."
         (if (diff-minimap--show-hunk-overlay hunk line)
             (setq diff-minimap--inline-active t)
           (user-error "No git diff available to show for this hunk"))))))
+
+;;;###autoload
+(defun diff-minimap-revert-hunk ()
+  "Revert the diff hunk at point to its original HEAD text.
+The change group shown as an inline diff is replaced by its original
+lines without saving the buffer; undo restores the reverted text.
+The minimap and any remaining inline hunks are refreshed immediately,
+even when `diff-minimap-live-diff' is nil."
+  (interactive)
+  (unless (buffer-file-name)
+    (user-error "Buffer has no file"))
+  (when buffer-read-only
+    (user-error "Buffer is read-only"))
+  ;; Revert what is currently visible in the buffer, even when live diff
+  ;; updates are disabled and the saved file no longer matches it.
+  (let* ((diff-minimap-live-diff t)
+         (line (line-number-at-pos))
+         (region (diff-minimap--change-region-at-line line)))
+    (unless region
+      (user-error "No diff hunk at line %d" line))
+    (diff-minimap--revert-change-region region)
+    (when (bound-and-true-p diff-minimap-mode)
+      (diff-minimap--refresh-display t))
+    (message "Reverted hunk at line %d" line)))
 
 (defun diff-minimap--refresh-inline-hunk ()
   "Recompute inline hunk overlays after saving the current buffer.
@@ -1931,6 +2035,8 @@ file keep their normal bindings."
           '(menu-item "" diff-minimap-show-hunk :filter diff-minimap--file-buffer-filter))
         (define-key map (kbd "C-c E")
           '(menu-item "" diff-minimap-show-all-hunks :filter diff-minimap--file-buffer-filter))
+        (define-key map (kbd "C-c r")
+          '(menu-item "" diff-minimap-revert-hunk :filter diff-minimap--file-buffer-filter))
         (define-key map (kbd "M-n")
           '(menu-item "" diff-minimap-next-hunk :filter diff-minimap--file-buffer-filter))
         (define-key map (kbd "M-p")
@@ -1948,7 +2054,8 @@ When active, the minimap follows the selected buffer and updates on
 scroll, edit, save, buffer switch, and hunk navigation — no need to
 toggle per buffer.  The sidebar is only shown for buffers with local
 changes.  When `diff-minimap-inline-preview' is non-nil, opening the
-minimap and hunk navigation show editable inline diffs.
+minimap and hunk navigation show editable inline diffs; `C-c r' reverts
+the hunk at point to its HEAD text without saving.
 \\{diff-minimap-mode-map}"
   :lighter " DMap"
   :global t
