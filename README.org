@@ -82,7 +82,10 @@ Org users can bind =C-c P= to =org-slides-start=).
 When =diff-minimap-mode= is active and =diff-minimap-inline-preview= is
 non-nil (the default), opening the minimap shows every hunk inline;
 each jump ensures the destination hunk is shown too, without removing
-the others.  =C-c e= toggles the hunk at point.
+the others.  =C-c e= toggles the hunk at point.  A hunk you hide with
+=C-c e= (or every hunk you hide with =C-c E=) stays collapsed during
+later =M-n= / =M-p= navigation and automatic refreshes; navigation never
+re-expands a hunk you explicitly turned off.
 
 ** Inline diff editing
 
@@ -99,7 +102,10 @@ Only the specific change group (the contiguous =-= /=+= block) containing
 point is shown per hunk, without surrounding context or unrelated changes
 from the same git hunk.  All hunks are shown when the minimap opens;
 =C-c e= toggles the hunk at point without clearing the others, and
-=C-c E= shows or hides every hunk in the buffer at once.
+=C-c E= shows or hides every hunk in the buffer at once.  Toggling a
+hunk off records the decision: later hunk navigation leaves that hunk
+collapsed instead of re-expanding it.  Show it again with =C-c e=, or
+use =C-c E= to show everything.
 
 Inline hunks follow the text with markers.  When =diff-minimap-live-diff=
 is non-nil (the default), editing recomputes the diff from the unsaved

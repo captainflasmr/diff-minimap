@@ -1,7 +1,7 @@
 ;;; diff-minimap.el --- VSCode-style minimap showing diff regions -*- lexical-binding: t; -*-
 ;;
 ;; Author: James Dyer <captainflasmr@gmail.com>
-;; Version: 0.12.0
+;; Version: 0.12.1
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: vc, tools, convenience
 ;; URL: https://github.com/captainflasmr/diff-minimap
@@ -165,8 +165,10 @@ Disabled when nil."
   "Whether opening and navigating the minimap shows editable inline diffs.
 When non-nil, opening the minimap shows every diff hunk inline, and
 `diff-minimap-next-hunk' / `diff-minimap-previous-hunk' ensure the
-destination hunk is shown too.  Removed lines are read-only virtual
-text, while added/changed lines remain ordinary editable buffer text."
+destination hunk is shown too, unless it was explicitly hidden with
+`diff-minimap-show-hunk' or `diff-minimap-show-all-hunks'.  Removed
+lines are read-only virtual text, while added/changed lines remain
+ordinary editable buffer text."
   :type 'boolean
   :group 'diff-minimap)
 
@@ -244,6 +246,12 @@ text to its original state removes the inline hunks without saving."
 
 (defvar-local diff-minimap--inline-active nil
   "Whether this buffer should keep inline hunks in sync with edits.")
+
+(defvar-local diff-minimap--hidden-hunks nil
+  "Markers at the starts of diff hunks explicitly hidden by the user.
+These hunks stay collapsed during navigation and automatic refreshes
+until they are shown again with `diff-minimap-show-hunk' or
+`diff-minimap-show-all-hunks'.")
 
 (defvar-local diff-minimap--inline-suspended nil
   "Non-nil when inline hunks were hidden for an Ediff session.
@@ -1193,6 +1201,7 @@ sidebar so it never shows another file's minimap."
                    (diff-minimap--render))))))
            (t
             (diff-minimap--remove-hunk-overlays)
+            (diff-minimap--clear-hidden-hunks)
             (diff-minimap--fringe-clear)
             (when (and mm-buf (get-buffer-window mm-buf 0))
               (diff-minimap--close-sidebar)))))
@@ -1533,6 +1542,7 @@ for the hunk (the inline diff is git-only)."
            (narrowed (and patch
                           (diff-minimap--extract-sub-hunk patch target-line))))
       (when narrowed
+        (diff-minimap--unhide-hunk hunk)
         (let* ((parsed (diff-minimap--parse-inline-hunk narrowed))
                (old-lines (nth 0 parsed))
                (new-start (nth 1 parsed))
@@ -1575,16 +1585,76 @@ for the hunk (the inline diff is git-only)."
                      (= (line-number-at-pos (overlay-start ov)) line)))
               (overlays-in (point-min) (point-max))))
 
+(defun diff-minimap--hunk-hidden-p (hunk)
+  "Return non-nil when HUNK was explicitly hidden by the user.
+HUNK is a list (TYPE START-LINE END-LINE)."
+  (let ((start (nth 1 hunk))
+        (end (max (nth 1 hunk) (nth 2 hunk))))
+    (cl-some (lambda (marker)
+               (and (markerp marker)
+                    (marker-position marker)
+                    (<= start (line-number-at-pos marker) end)))
+             diff-minimap--hidden-hunks)))
+
+(defun diff-minimap--hide-hunk (hunk)
+  "Record HUNK as explicitly hidden until the user shows it again."
+  (unless (diff-minimap--hunk-hidden-p hunk)
+    (save-excursion
+      (goto-char (point-min))
+      (forward-line (1- (max 1 (nth 1 hunk))))
+      (push (copy-marker (point)) diff-minimap--hidden-hunks))))
+
+(defun diff-minimap--unhide-hunk (hunk)
+  "Forget an explicit hide recorded for HUNK."
+  (let ((start (nth 1 hunk))
+        (end (max (nth 1 hunk) (nth 2 hunk))))
+    (dolist (marker diff-minimap--hidden-hunks)
+      (when (and (markerp marker)
+                 (marker-position marker)
+                 (<= start (line-number-at-pos marker) end))
+        (set-marker marker nil)))
+    (setq diff-minimap--hidden-hunks
+          (cl-remove-if-not (lambda (marker)
+                              (and (markerp marker)
+                                   (marker-position marker)))
+                            diff-minimap--hidden-hunks))))
+
+(defun diff-minimap--clear-hidden-hunks ()
+  "Forget every explicit hunk hide in the current buffer."
+  (dolist (marker diff-minimap--hidden-hunks)
+    (when (markerp marker)
+      (set-marker marker nil)))
+  (setq diff-minimap--hidden-hunks nil))
+
+(defun diff-minimap--prune-hidden-hunks (data)
+  "Drop hidden-hunk markers that no longer cover a hunk in DATA."
+  (let (kept)
+    (dolist (marker diff-minimap--hidden-hunks)
+      (if (and (markerp marker)
+               (marker-position marker)
+               (let ((line (line-number-at-pos marker)))
+                 (cl-some (lambda (hunk)
+                            (<= (nth 1 hunk) line
+                                (max (nth 1 hunk) (nth 2 hunk))))
+                          data)))
+          (push marker kept)
+        (when (markerp marker)
+          (set-marker marker nil))))
+    (setq diff-minimap--hidden-hunks (nreverse kept))))
+
 (defun diff-minimap--show-all-inline-hunks ()
   "Ensure every diff hunk in the current buffer has an inline overlay.
-Existing inline hunks are left alone; missing ones are added."
+Hunks the user explicitly hid are left hidden.  Existing inline hunks
+are left alone; missing ones are added."
   (setq diff-minimap--inline-active t)
   (let* ((data (diff-minimap--collect-diff-data))
          (full-patch (and data
                           (buffer-file-name)
                           (diff-minimap--current-patch (buffer-file-name)))))
+    (diff-minimap--prune-hidden-hunks data)
     (dolist (hunk data)
-      (unless (diff-minimap--hunk-overlay-at-line (nth 1 hunk))
+      (unless (or (diff-minimap--hunk-overlay-at-line (nth 1 hunk))
+                  (diff-minimap--hunk-hidden-p hunk))
         (ignore-errors
           (diff-minimap--show-hunk-overlay hunk (nth 1 hunk) full-patch))))))
 
@@ -1615,6 +1685,7 @@ is nil."
           (diff-minimap--open-sidebar)))
        (t
         (diff-minimap--remove-hunk-overlays)
+        (diff-minimap--clear-hidden-hunks)
         (diff-minimap--fringe-clear)
         (when (get-buffer-window diff-minimap--buffer-name 0)
           (diff-minimap--close-sidebar)))))))
@@ -1654,22 +1725,30 @@ is nil."
 
 (defun diff-minimap-show-all-hunks ()
   "Show or hide all editable inline diff hunks in the current buffer.
-Toggles: if any hunk overlays exist, remove them all. Otherwise, show all."
+Toggles: if any hunk overlays exist, remove them all and remember the
+hides so navigation does not re-expand them.  Otherwise, clear every
+explicit hide and show all hunks."
   (interactive)
   (diff-minimap--ensure-mode)
   (let ((ovs (cl-remove-if-not (lambda (ov) (overlay-get ov 'diff-minimap-hunk))
                                (overlays-in (point-min) (point-max)))))
     (if ovs
         (progn
+          ;; Remember that every current hunk was hidden, so showing one
+          ;; hunk later does not make navigation re-expand the others.
+          (dolist (hunk (diff-minimap--collect-diff-data))
+            (diff-minimap--hide-hunk hunk))
           (diff-minimap--remove-hunk-overlays)
           (setq diff-minimap--inline-active nil))
+      (diff-minimap--clear-hidden-hunks)
       (diff-minimap--show-all-inline-hunks))))
 
 (defun diff-minimap-show-hunk ()
   "Show or hide the diff hunk at point as an editable inline diff.
 Removed lines are read-only virtual text; added/changed lines stay in
-the buffer and can be edited normally.  Other inline hunks are left
-alone; use `diff-minimap-show-all-hunks' to toggle every hunk."
+the buffer and can be edited normally.  A hidden hunk stays hidden
+during navigation until it is shown again.  Other inline hunks are
+left alone; use `diff-minimap-show-all-hunks' to toggle every hunk."
   (interactive)
   (diff-minimap--ensure-mode)
   (let* ((line (line-number-at-pos))
@@ -1678,6 +1757,9 @@ alone; use `diff-minimap-show-all-hunks' to toggle every hunk."
                               (overlays-at (point)))))
     (if hunk-ov
         (progn
+          ;; Record the hide so navigation and refreshes leave it collapsed.
+          (let ((start (line-number-at-pos (overlay-start hunk-ov))))
+            (diff-minimap--hide-hunk (list 'changed start start)))
           (diff-minimap--delete-hunk-overlay hunk-ov)
           (unless (cl-some (lambda (ov) (overlay-get ov 'diff-minimap-hunk))
                            (overlays-in (point-min) (point-max)))
@@ -1734,6 +1816,7 @@ Overlays whose hunk no longer exists in the new diff are dropped."
              (full-patch (and data
                               (buffer-file-name)
                               (diff-minimap--current-patch (buffer-file-name)))))
+        (diff-minimap--prune-hidden-hunks data)
         (dolist (marker markers)
           (when (marker-position marker)
             (let* ((line (line-number-at-pos marker))
@@ -1766,6 +1849,7 @@ minimap is not hidden."
           (progn
             (diff-minimap--render)
             (when (and diff-minimap-inline-preview
+                       diff-minimap--inline-active
                        (not diff-minimap--ediff-control-buffer)
                        (not diff-minimap--inline-suspended))
               (diff-minimap--show-all-inline-hunks)))
@@ -1783,6 +1867,7 @@ leave stale inline overlays and timers behind."
       (cancel-timer diff-minimap--live-diff-timer)
       (setq diff-minimap--live-diff-timer nil))
     (diff-minimap--remove-hunk-overlays)
+    (diff-minimap--clear-hidden-hunks)
     (diff-minimap--fringe-clear)
     (setq diff-minimap--inline-active nil
           diff-minimap--inline-suspended nil
@@ -1801,6 +1886,7 @@ sidebar from the reread text in that case."
     (diff-minimap--remove-hunk-overlays)
     (diff-minimap--activate-buffer)
     (when (and diff-minimap-inline-preview
+               diff-minimap--inline-active
                (not diff-minimap--ediff-control-buffer)
                (not diff-minimap--inline-suspended))
       (diff-minimap--show-all-inline-hunks))))
@@ -2041,6 +2127,7 @@ Uses the configured `diff-minimap-diff-backend' to find hunks."
                    (let ((start (nth 1 h)))
                      (when (> start current)
                        (throw 'found h)))))))
+    (diff-minimap--prune-hidden-hunks data)
     (if next
         (let ((start (nth 1 next))
               (end (nth 2 next)))
@@ -2048,9 +2135,11 @@ Uses the configured `diff-minimap-diff-backend' to find hunks."
           (forward-line (1- start))
           (when (and (bound-and-true-p diff-minimap-mode)
                      diff-minimap-inline-preview
-                     (not (diff-minimap--hunk-overlay-at-line (nth 1 next))))
+                     diff-minimap--inline-active
+                     (not (diff-minimap--hunk-overlay-at-line start))
+                     (not (diff-minimap--hunk-hidden-p next)))
             (ignore-errors
-              (diff-minimap--show-hunk-overlay next (nth 1 next))))
+              (diff-minimap--show-hunk-overlay next start)))
           (recenter)
           (diff-minimap--pulse-range start end))
       (user-error "No next hunk"))))
@@ -2068,6 +2157,7 @@ Uses the configured `diff-minimap-diff-backend' to find hunks."
       (let ((start (nth 1 h)))
         (when (< start current)
           (setq prev h))))
+    (diff-minimap--prune-hidden-hunks data)
     (if prev
         (let ((start (nth 1 prev))
               (end (nth 2 prev)))
@@ -2075,9 +2165,11 @@ Uses the configured `diff-minimap-diff-backend' to find hunks."
           (forward-line (1- start))
           (when (and (bound-and-true-p diff-minimap-mode)
                      diff-minimap-inline-preview
-                     (not (diff-minimap--hunk-overlay-at-line (nth 1 prev))))
+                     diff-minimap--inline-active
+                     (not (diff-minimap--hunk-overlay-at-line start))
+                     (not (diff-minimap--hunk-hidden-p prev)))
             (ignore-errors
-              (diff-minimap--show-hunk-overlay prev (nth 1 prev))))
+              (diff-minimap--show-hunk-overlay prev start)))
           (recenter)
           (diff-minimap--pulse-range start end))
       (user-error "No previous hunk"))))
@@ -2252,6 +2344,7 @@ point to its HEAD text without saving.
       (cancel-timer diff-minimap--live-diff-timer)
       (setq diff-minimap--live-diff-timer nil))
     (diff-minimap--remove-hunk-overlays)
+    (diff-minimap--clear-hidden-hunks)
     (diff-minimap--fringe-clear)
     (setq diff-minimap--sidebar-intended nil
           diff-minimap--inline-active nil
