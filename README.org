@@ -57,6 +57,13 @@ arrival).  They are bound to =C-x v ]= and =C-x v [= in
 =diff-minimap-mode-map=, so they apply only in buffers where the mode is
 enabled.
 
+When =diff-minimap-reveal-hidden-content= is non-nil (the default), a
+jump also unfolds the destination if it is hidden — for example inside
+a folded Org subtree, an outline entry, a hideshow block, or another
+invisible overlay.  Both ends of the hunk are revealed so the whole
+change can be inspected.  This uses each mode's own reveal hooks, so
+unrelated folds are left alone.
+
 | Keybinding | Command                          |
 |------------+----------------------------------|
 | =C-x v ]=  | =diff-minimap-next-hunk=         |
@@ -190,6 +197,7 @@ Set it in your config:
 | =diff-minimap-colour-source=     | 'diff-hl     | Prefer =diff-hl= fringe faces or built-in =diff= faces       |
 | =diff-minimap-wheel-scroll-lines= | 3           | Source lines scrolled per wheel notch over the minimap       |
 | =diff-minimap-inline-preview=    | t           | Show editable inline diffs on open and navigation            |
+| =diff-minimap-reveal-hidden-content= | t        | Unfold hidden content at the destination hunk                |
 | =diff-minimap-live-diff=         | t           | Recompute the diff from unsaved buffer text while typing     |
 | =diff-minimap-live-diff-delay=   | 0.2         | Idle seconds before a live diff refresh                      |
 

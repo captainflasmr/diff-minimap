@@ -42,8 +42,10 @@
 ;; hunk inline; removed lines are read-only virtual text, while
 ;; added/changed lines stay in the buffer and can be edited in place.  The
 ;; diff updates live as you type, and reverting text to HEAD removes the
-;; inline hunk.  `C-c r' restores the hunk at point to its HEAD text
-;; without saving.  The minimap auto-refreshes on scroll and save.  Click a
+;; inline hunk.  Hunk navigation also unfolds hidden content (Org
+;; subtrees, outline entries, hideshow blocks) at the destination.
+;; `C-c r' restores the hunk at point to its HEAD text without saving.
+;; The minimap auto-refreshes on scroll and save.  Click a
 ;; row in the minimap to jump to that line in the source buffer, drag with
 ;; mouse-1 to scrub the source view, or use the wheel / two-finger scroll
 ;; over the minimap to scroll the source buffer.
@@ -60,6 +62,11 @@
 (defvar diff-hl-mode)
 
 (declare-function ediff-get-diff-overlay "ediff-util" (n buf-type))
+(declare-function hs-show-block "hideshow" ())
+(declare-function org-fold-show-context "org-fold" (&optional key))
+(declare-function org-reveal "org" (&optional siblings))
+(declare-function org-show-context "org" (&optional key))
+(declare-function outline-show-entry "outline" ())
 
 (defgroup diff-minimap nil
   "VSCode-style minimap showing diff regions across the entire buffer."
@@ -169,6 +176,15 @@ destination hunk is shown too, unless it was explicitly hidden with
 `diff-minimap-show-hunk' or `diff-minimap-show-all-hunks'.  Removed
 lines are read-only virtual text, while added/changed lines remain
 ordinary editable buffer text."
+  :type 'boolean
+  :group 'diff-minimap)
+
+(defcustom diff-minimap-reveal-hidden-content t
+  "Whether hunk navigation reveals folded or invisible text.
+When non-nil, jumping to a diff hunk unfolds the destination when it
+is hidden inside an Org subtree, outline entry, hideshow block, or
+other invisible overlay.  Both ends of the hunk are revealed so the
+whole change can be inspected."
   :type 'boolean
   :group 'diff-minimap)
 
@@ -1337,6 +1353,8 @@ it until the button is released."
       (with-selected-window win
         (goto-char (point-min))
         (forward-line (1- line))
+        (when diff-minimap-reveal-hidden-content
+          (diff-minimap--reveal-hidden-line line))
         (recenter 0)
         (diff-minimap-show-hunk)))))
 
@@ -2063,6 +2081,66 @@ buffer) while an Ediff session is active."
              (and ediff-dual (nth 1 ediff-dual))
              (and ediff-dual (nth 2 ediff-dual)))))
 
+(defun diff-minimap--call-reveal-opener (opener overlay)
+  "Call OPENER for OVERLAY, accepting one- or two-argument openers."
+  (condition-case nil
+      (funcall opener overlay nil)
+    (wrong-number-of-arguments
+     (funcall opener overlay))))
+
+(defun diff-minimap--reveal-invisible-overlays (pos)
+  "Reveal invisible overlays covering POS using their own openers.
+Modes such as outline and hideshow register reveal or isearch hooks on
+their folding overlays; fall back to clearing the invisible property
+when an overlay has no opener."
+  (dolist (ov (overlays-at pos))
+    (let ((invisible (overlay-get ov 'invisible)))
+      (when (invisible-p invisible)
+        (let ((opener (or (overlay-get ov 'reveal-toggle-invisible)
+                          (and (symbolp invisible)
+                               (get invisible 'reveal-toggle-invisible))
+                          (overlay-get ov 'isearch-open-invisible-temporary)
+                          (overlay-get ov 'isearch-open-invisible))))
+          (when opener
+            (ignore-errors
+              (diff-minimap--call-reveal-opener opener ov))))
+        (when (and (overlay-buffer ov)
+                   (invisible-p (overlay-get ov 'invisible)))
+          (overlay-put ov 'invisible nil))))))
+
+(defun diff-minimap--reveal-hidden-at-point ()
+  "Reveal folded or invisible content at point."
+  (let ((pos (point)))
+    (when (invisible-p pos)
+      (cond
+       ((derived-mode-p 'org-mode)
+        (cond
+         ((fboundp 'org-fold-show-context)
+          (ignore-errors (org-fold-show-context)))
+         ((fboundp 'org-show-context)
+          (ignore-errors (org-show-context)))
+         ((fboundp 'org-reveal)
+          (ignore-errors (org-reveal)))))
+       ((or (derived-mode-p 'outline-mode)
+            (bound-and-true-p outline-minor-mode))
+        (ignore-errors (outline-show-entry)))
+       ((bound-and-true-p hs-minor-mode)
+        (ignore-errors (hs-show-block))))
+      (diff-minimap--reveal-invisible-overlays pos))))
+
+(defun diff-minimap--reveal-hidden-line (line)
+  "Reveal folded or invisible content on LINE."
+  (save-excursion
+    (goto-char (point-min))
+    (forward-line (1- (max 1 line)))
+    (diff-minimap--reveal-hidden-at-point)))
+
+(defun diff-minimap--reveal-hunk (start end)
+  "Reveal folding that hides the hunk from START to END.
+Both ends are revealed so the whole changed region can be inspected."
+  (dolist (line (delete-dups (list start end)))
+    (diff-minimap--reveal-hidden-line line)))
+
 (defun diff-minimap--pulse-range (start end)
   "Momentarily highlight lines from START to END (1-indexed, inclusive)."
   (ignore-errors
@@ -2133,6 +2211,8 @@ Uses the configured `diff-minimap-diff-backend' to find hunks."
               (end (nth 2 next)))
           (goto-char (point-min))
           (forward-line (1- start))
+          (when diff-minimap-reveal-hidden-content
+            (diff-minimap--reveal-hunk start end))
           (when (and (bound-and-true-p diff-minimap-mode)
                      diff-minimap-inline-preview
                      diff-minimap--inline-active
@@ -2163,6 +2243,8 @@ Uses the configured `diff-minimap-diff-backend' to find hunks."
               (end (nth 2 prev)))
           (goto-char (point-min))
           (forward-line (1- start))
+          (when diff-minimap-reveal-hidden-content
+            (diff-minimap--reveal-hunk start end))
           (when (and (bound-and-true-p diff-minimap-mode)
                      diff-minimap-inline-preview
                      diff-minimap--inline-active

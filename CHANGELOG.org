@@ -12,10 +12,11 @@ This document contains the release notes for diff-minimap.
 
 ** 0.12.1 — <2026-10-29>
 
-Respect explicitly hidden inline hunks.
+Respect explicit hides and reveal hidden destinations.
 
 - Hunk navigation (=M-n= / =M-p=, =C-x v ]= / =C-x v [=) no longer re-expands a hunk that was turned off with =C-c e=, or any hunk when all were turned off with =C-c E=.  The hide is remembered per hunk with markers, so it survives edits, live-diff refreshes, and navigation.
 - =C-c e= still shows a hidden hunk again, and =C-c E= clears every explicit hide and shows all hunks.  Hidden-hunk state is cleared when the mode is disabled, the major mode changes, or the buffer no longer has changes.
+- Hunk navigation and minimap right-clicks now reveal hidden content at the destination.  A hunk inside a folded Org subtree, outline entry, hideshow block, or other invisible overlay is automatically unfolded, revealing both ends of the hunk.  Add =diff-minimap-reveal-hidden-content= (default =t=) to disable this.
 
 ** 0.12.0 — <2026-10-26>
 
