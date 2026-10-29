@@ -33,6 +33,8 @@ The minimap side window is marked =no-other-window=, so =C-x o= and window-motio
 
 The sidebar is only shown for files with local changes.  Opening it in a clean file is refused, and switching to a clean buffer hides the shared sidebar while keeping the mode and inline hunks intact; switching back to a changed file restores it.
 
+The sidebar remains a full-buffer overview while you scroll or navigate: the hunk blocks stay fixed and only the viewport and cursor indicators move.  It is rebuilt when the diff or collapse state changes, or when the sidebar is resized.
+
 Toggling the minimap off (=C-z m=) clears inline hunks and disables the mode only in the current buffer.  Other files that enabled the mode keep their inline hunks and live updates, and need to be toggled off separately.
 
 Opening the minimap shows every diff hunk inline (when =diff-minimap-inline-preview= is non-nil): removed lines are read-only virtual text, while the added/changed lines remain ordinary buffer text you can edit in place.  The inline views update live as you type, =C-x v ]= / =C-x v [= step between the hunks, and =C-c r= reverts the hunk at point without leaving the buffer.

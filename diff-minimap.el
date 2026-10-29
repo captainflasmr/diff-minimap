@@ -366,6 +366,9 @@ Only buffers with `diff-minimap-mode' enabled set this.")
 (defvar-local diff-minimap--last-nrows nil
   "Minimap row count at last full render — for detecting window resizes.")
 
+(defvar-local diff-minimap--last-geometry nil
+  "Minimap geometry used by the last full render.")
+
 (defvar-local diff-minimap--last-themes nil
   "Snapshot of `custom-enabled-themes' at last full render.")
 
@@ -990,6 +993,17 @@ DIFF-DATA is a list of (TYPE START END) as returned by
     (forward-line row)
     (point)))
 
+(defun diff-minimap--pin-window (win)
+  "Keep minimap WIN at the beginning of its overview buffer."
+  (when (window-live-p win)
+    (with-current-buffer (window-buffer win)
+      (unless (= (window-point win) (point-min))
+        (set-window-point win (point-min)))
+      (unless (= (window-start win) (point-min))
+        (set-window-start win (point-min) t))
+      (unless (zerop (window-vscroll win t))
+        (set-window-vscroll win 0 t)))))
+
 (defun diff-minimap--clear-overlays ()
   "Remove all diff-minimap overlays (viewport, cursor, diff colours) from the minimap buffer."
   (dolist (ov (overlays-in (point-min) (point-max)))
@@ -1004,13 +1018,15 @@ DIFF-DATA is a list of (TYPE START END) as returned by
   "Update viewport and cursor overlays in the minimap buffer.
 Called on every command — cheap overlay moves, not a full rebuild."
   (let* ((mm-buf (get-buffer diff-minimap--buffer-name))
+         (mm-win (and mm-buf (get-buffer-window mm-buf 0)))
          (this-buf (current-buffer))
          (ediff-active (and diff-minimap--ediff-control-buffer
                             (buffer-live-p diff-minimap--ediff-control-buffer)))
          (a-buf (and ediff-active (with-current-buffer diff-minimap--ediff-control-buffer (bound-and-true-p ediff-buffer-A))))
          (b-buf (and ediff-active (with-current-buffer diff-minimap--ediff-control-buffer (bound-and-true-p ediff-buffer-B))))
          (dual-col (and a-buf (buffer-live-p a-buf) b-buf (buffer-live-p b-buf))))
-    (when (and mm-buf (get-buffer-window mm-buf 0))
+    (when mm-win
+      (diff-minimap--pin-window mm-win)
       (with-current-buffer this-buf
          (let* ((ranges (unless dual-col
                            (or diff-minimap--last-visible-ranges
@@ -1053,19 +1069,22 @@ Called on every command — cheap overlay moves, not a full rebuild."
                  (when diff-minimap--viewport-overlay
                    (delete-overlay diff-minimap--viewport-overlay)
                    (setq diff-minimap--viewport-overlay nil))
-                 (if diff-minimap--viewport-edge-top
-                     (move-overlay diff-minimap--viewport-edge-top
-                                   (diff-minimap--row->pos ws-row)
-                                   (diff-minimap--row->pos (1+ ws-row))
-                                   mm-buf)
-                   (setq diff-minimap--viewport-edge-top
-                         (make-overlay (diff-minimap--row->pos ws-row)
-                                       (diff-minimap--row->pos (1+ ws-row))
-                                       mm-buf))
-                   (overlay-put diff-minimap--viewport-edge-top
-                                'diff-minimap-overlay t))
-                  (overlay-put diff-minimap--viewport-edge-top 'face
-                               '(:overline t :extend t))
+                 ;; Draw the top boundary beneath the preceding row.  An
+                 ;; overline would increase tiny row heights on GUI frames.
+                 (let ((top-row (max 0 (1- ws-row))))
+                   (if diff-minimap--viewport-edge-top
+                       (move-overlay diff-minimap--viewport-edge-top
+                                     (diff-minimap--row->pos top-row)
+                                     (diff-minimap--row->pos (1+ top-row))
+                                     mm-buf)
+                     (setq diff-minimap--viewport-edge-top
+                           (make-overlay (diff-minimap--row->pos top-row)
+                                         (diff-minimap--row->pos (1+ top-row))
+                                         mm-buf))
+                     (overlay-put diff-minimap--viewport-edge-top
+                                  'diff-minimap-overlay t)))
+                 (overlay-put diff-minimap--viewport-edge-top 'face
+                              '(:underline t :extend t))
                  (overlay-put diff-minimap--viewport-edge-top 'priority 5)
                  (if diff-minimap--viewport-edge-bottom
                      (move-overlay diff-minimap--viewport-edge-bottom
@@ -1277,23 +1296,44 @@ Each entry in DIFF-A/DIFF-B is (FACE-OR-TYPE VIRT-START VIRT-END)."
 
 
 (defun diff-minimap--minimap-row-height (win)
-  "Return the pixel height of one minimap row in WIN, or nil."
+  "Return the pixel height of one minimap row in WIN, or nil.
+Measure the same row even when redisplay is pending; using displayed
+line heights can otherwise change the overview scale between commands."
   (when (and win (window-live-p win))
-    (or (let ((lh (ignore-errors
-                    (window-line-height (window-start win) win))))
-          (and lh (numberp (car lh)) (> (car lh) 0) (car lh)))
-        (with-current-buffer (window-buffer win)
-          (let ((inhibit-read-only t)
-                (inhibit-modification-hooks t))
-            (unless (> (buffer-size) 0)
-              (insert " \n"))
-            (let* ((size (ignore-errors
-                           (window-text-pixel-size
-                            win (point-min)
-                            (min (point-max) (1+ (line-end-position)))
-                            nil nil)))
-                   (height (and size (cdr size))))
-              (and (numberp height) (> height 0) height)))))))
+    (with-current-buffer (window-buffer win)
+      (let ((inhibit-read-only t)
+            (inhibit-modification-hooks t))
+        (unless (> (buffer-size) 0)
+          (insert " \n"))
+        (let* ((size (ignore-errors
+                       (window-text-pixel-size
+                        win (point-min) (min (point-max) (1+ (point-min))))))
+               (height (and size (cdr size))))
+          (and (numberp height) (> height 0) height))))))
+
+(defun diff-minimap--minimap-geometry (win)
+  "Return (ROWS HEIGHT WIDTH ROW-HEIGHT) for minimap WIN, or nil.
+HEIGHT and ROW-HEIGHT are pixels; WIDTH is in frame columns.  Leave at
+least one row of slack on graphical frames for small minibuffer changes."
+  (when (and (window-live-p win) (> (window-body-height win t) 0))
+    (let* ((height (window-body-height win t))
+           (row-px (or (diff-minimap--minimap-row-height win)
+                       (max 1 (ceiling (* (frame-char-height (window-frame win))
+                                          diff-minimap-font-scale)))))
+           (slack (if (display-graphic-p (window-frame win))
+                      (max 2 row-px) 0))
+           (rows (max 1 (floor (/ (max 1 (- height slack)) row-px)))))
+      (list rows height (window-width win) row-px))))
+
+(defun diff-minimap--minimap-geometry-changed-p (current previous tolerance)
+  "Return non-nil if CURRENT differs materially from PREVIOUS geometry.
+TOLERANCE allows small pixel-height changes without rescaling the map."
+  (and current
+       (or (not previous)
+           (/= (nth 2 current) (nth 2 previous))
+           (/= (nth 3 current) (nth 3 previous))
+           (and (/= (car current) (car previous))
+                (> (abs (- (nth 1 current) (nth 1 previous))) tolerance)))))
 
 (defun diff-minimap--render (&optional window)
   "Render the full minimap content with diff colours only.
@@ -1345,20 +1385,13 @@ registered with `get-buffer-window'."
                              (if (and (numberp diff-minimap-font-scale) (> diff-minimap-font-scale 0))
                                  (ceiling (/ (float base-w) diff-minimap-font-scale))
                                base-w)))
-             (nrows (max 1
-                         (if mm-win
-                             (let ((row-px (diff-minimap--minimap-row-height mm-win))
-                                   (body-px (window-body-height mm-win t)))
-                               (if (and row-px (> body-px 0))
-                                   (floor (/ body-px row-px))
-                                 (let ((row-px (ceiling (* (frame-char-height)
-                                                           diff-minimap-font-scale))))
-                                   (floor (/ body-px row-px)))))
-                           (let ((row-px (ceiling (* (frame-char-height)
-                                                     diff-minimap-font-scale))))
-                             (floor (/ (window-body-height
-                                        (or src-win (selected-window)) t)
-                                       row-px))))))
+             (geometry (diff-minimap--minimap-geometry mm-win))
+             (nrows (or (car geometry)
+                        (let ((row-px (max 1 (ceiling (* (frame-char-height)
+                                                          diff-minimap-font-scale)))))
+                          (max 1 (floor (/ (window-body-height
+                                            (or src-win (selected-window)) t)
+                                           row-px))))))
              (scale (/ (float total) nrows))
              (deletion-blocks
               (unless dual-col
@@ -1369,6 +1402,7 @@ registered with `get-buffer-window'."
              (row-diff-A (when dual-col (make-vector nrows nil)))
              (row-diff-B (when dual-col (make-vector nrows nil))))
         (setq diff-minimap--last-nrows nrows
+              diff-minimap--last-geometry geometry
               diff-minimap--last-themes (and (boundp 'custom-enabled-themes)
                                               custom-enabled-themes))
         (if dual-col
@@ -1489,11 +1523,11 @@ registered with `get-buffer-window'."
                         (overlay-put ov 'diff-minimap-overlay t))))))))
             ;; Recreate viewport/cursor overlays from source buffer context
             (diff-minimap--update-viewport)
-            ;; Insert pushes point to point-max — move it back so redisplay
-            ;; doesn't try to chase it.  nrows now exactly matches the
-            ;; window height, so all rows are always visible.
+            ;; Inserting rows moves point; keep the whole overview in view
+            ;; instead of letting the nonselected sidebar scroll after it.
             (with-current-buffer mm-buf
-              (goto-char (point-min))))))))
+              (goto-char (point-min))
+              (diff-minimap--pin-window mm-win)))))))
 
 (defun diff-minimap--post-command ()
   "Global post-command hook for enabled buffers.
@@ -1568,19 +1602,16 @@ sidebar so it never shows another file's minimap."
                    (eq buf diff-minimap--last-buffer))
           (let* ((tick (with-current-buffer buf
                          (buffer-chars-modified-tick)))
-                 (cur-nrows (let ((mm-win (get-buffer-window mm-buf 0)))
-                              (when mm-win
-                                (let ((row-px (ceiling
-                                               (* (frame-char-height)
-                                                  diff-minimap-font-scale))))
-                                  (floor (/ (window-body-height mm-win t)
-                                            row-px))))))
+                 (mm-win (get-buffer-window mm-buf 0))
+                 (geometry (diff-minimap--minimap-geometry mm-win))
+                 (tolerance (if (and mm-win (display-graphic-p (window-frame mm-win)))
+                                (max 2 (or (nth 3 diff-minimap--last-geometry) 1))
+                              0))
                  (cur-themes (and (boundp 'custom-enabled-themes)
                                   custom-enabled-themes))
                  (needs-full (or (not (eq tick diff-minimap--last-tick))
-                                 (and cur-nrows
-                                      (not (= cur-nrows
-                                              (or diff-minimap--last-nrows 0))))
+                                 (diff-minimap--minimap-geometry-changed-p
+                                  geometry diff-minimap--last-geometry tolerance)
                                  (not (equal cur-themes
                                              diff-minimap--last-themes))))
                  (live-pending (and diff-minimap-live-diff
@@ -2581,6 +2612,7 @@ leave stale inline overlays and timers behind."
           diff-minimap--collapse-context nil
           diff-minimap--collapsed-ranges nil
           diff-minimap--last-visible-ranges nil
+          diff-minimap--last-geometry nil
           diff-minimap--last-display-deletions nil
           diff-minimap--inline-suspended nil
           diff-minimap--sidebar-intended nil)
@@ -3137,6 +3169,7 @@ point to its HEAD text without saving.
           diff-minimap--collapse-context nil
           diff-minimap--collapsed-ranges nil
           diff-minimap--last-visible-ranges nil
+          diff-minimap--last-geometry nil
           diff-minimap--last-display-deletions nil
           diff-minimap--inline-suspended nil)
     (when (and (get-buffer-window diff-minimap--buffer-name 0)
