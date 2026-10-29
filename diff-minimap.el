@@ -337,6 +337,12 @@ Each range is (START . END), 1-indexed and inclusive.")
 (defvar-local diff-minimap--last-visible-ranges nil
   "Visible source-line ranges used by the last minimap render.")
 
+(defvar-local diff-minimap--deletion-markers nil
+  "Deletion blocks from the last git diff collection.
+Each entry is (LINE . COUNT), where COUNT old lines were deleted at
+the new-file line LINE.  These markers let the minimap show the
+removed side of replacement hunks, which has no new-file line range.")
+
 (defvar-local diff-minimap--inline-suspended nil
   "Non-nil when inline hunks were hidden for an Ediff session.
 The hunks are restored when the buffer is shown outside the Ediff
@@ -490,6 +496,50 @@ SCALE is visible lines per row and NROWS is the minimap height."
     (cons (max 0 (min (1- nrows) first))
           (max 0 (min (1- nrows) last)))))
 
+(defun diff-minimap--deletion-block-ranges (diff-data line-ranges scale nrows
+                                                      markers)
+  "Return row ranges for deleted blocks in the minimap.
+Each result is (FIRST-ROW LAST-ROW SOURCE-LINE), where SOURCE-LINE is
+the new-file line where the deleted text is inserted.  DIFF-DATA,
+LINE-RANGES, SCALE, and NROWS describe the minimap; MARKERS come from
+`diff-minimap--deletion-markers'."
+  (let ((counts (make-hash-table :test 'equal))
+        blocks)
+    (dolist (marker markers)
+      (let ((point (car marker))
+            (count (cdr marker)))
+        (let ((change (or (cl-find-if
+                           (lambda (change)
+                             (and (memq (car change) '(added changed))
+                                  (<= (nth 1 change) point
+                                      (1+ (max (nth 1 change)
+                                               (nth 2 change))))))
+                           diff-data)
+                          (cl-find-if
+                           (lambda (change)
+                             (and (eq (car change) 'removed)
+                                  (<= (nth 1 change) point
+                                      (max (nth 1 change)
+                                           (nth 2 change)))))
+                           diff-data)
+                          (list 'removed point point))))
+          (puthash change (+ count (gethash change counts 0)) counts))))
+    (maphash
+     (lambda (change count)
+       (let* ((insertion-line (nth 1 change))
+              (visible-line (diff-minimap--line-to-visible
+                             insertion-line line-ranges))
+              (rows (diff-minimap--visible-range-rows
+                     visible-line visible-line scale nrows))
+              (first-row (car rows))
+              (height (max 1 (ceiling (/ count scale))))
+              (block-first (max 0 (- first-row height)))
+              (block-last (max 0 (1- first-row))))
+         (push (list block-first block-last insertion-line) blocks)))
+     counts)
+    (sort blocks (lambda (a b)
+                   (< (nth 2 a) (nth 2 b))))))
+
 (defun diff-minimap--face-colour (face attribute)
   "Return FACE's usable ATTRIBUTE as a colour string, or nil.
 Inherited colours count, so a face that borrows from the theme still
@@ -599,6 +649,7 @@ Returns a list of (TYPE START-LINE END-LINE) where TYPE is
 `added', `changed', or `removed', and START-LINE/END-LINE are
 1-indexed inclusive line numbers in the current buffer.
 Returns nil when no backend is available or no changes exist."
+  (setq diff-minimap--deletion-markers nil)
   (pcase diff-minimap-diff-backend
     ('diff-hl (diff-minimap--collect-from-diff-hl))
     ('vc (diff-minimap--collect-from-vc))
@@ -721,10 +772,35 @@ with the saved file."
         (diff-minimap--git-output
          "diff" "--no-color" "--unified=0" "HEAD" "--" rel-file)))))
 
+(defun diff-minimap--hunk-deletion-markers (hunk-lines hunk-new-start)
+  "Return deletion markers for HUNK-LINES.
+Each marker is (NEW-LINE . COUNT).  HUNK-NEW-START is the hunk's
+new-file start line, used for pure-deletion hunks."
+  (let ((markers nil)
+        (point nil)
+        (count 0)
+        (has-plus (cl-some (lambda (line)
+                             (string= (car line) "+"))
+                           hunk-lines)))
+    (cl-labels ((flush ()
+                  (when point
+                    (push (cons (if has-plus point (1+ hunk-new-start))
+                                count)
+                          markers)
+                    (setq point nil count 0))))
+      (dolist (line hunk-lines)
+        (pcase (car line)
+          ("-" (unless point (setq point (cdr line)))
+               (cl-incf count))
+          ((or "+" " ") (flush))))
+      (flush))
+    (nreverse markers)))
+
 (defun diff-minimap--parse-git-diff (lines)
   "Parse git diff LINES and return list of (TYPE START END).
 Each type is `added', `changed', or `removed' with 1-indexed
 inclusive line numbers in the current buffer."
+  (setq diff-minimap--deletion-markers nil)
   (let ((result nil)
         (new-line nil)
         (hunk-lines nil)
@@ -733,9 +809,14 @@ inclusive line numbers in the current buffer."
       (cond
        ((string-match "^@@ -\\([0-9]+\\),?\\([0-9]*\\) \\+\\([0-9]+\\),?\\([0-9]*\\) @@" line)
         (when hunk-lines
+          (setq hunk-lines (nreverse hunk-lines))
+          (setq diff-minimap--deletion-markers
+                (nconc diff-minimap--deletion-markers
+                       (diff-minimap--hunk-deletion-markers
+                        hunk-lines hunk-new-start)))
           (setq result (nconc result
                               (diff-minimap--process-hunk-lines
-                               (nreverse hunk-lines) hunk-new-start)))
+                               hunk-lines hunk-new-start)))
           (setq hunk-lines nil))
         (setq new-line (string-to-number (match-string 3 line))
               hunk-new-start new-line))
@@ -744,9 +825,14 @@ inclusive line numbers in the current buffer."
         (when (string-match "^\\([+ ]\\)" line)
           (cl-incf new-line)))))
     (when hunk-lines
+      (setq hunk-lines (nreverse hunk-lines))
+      (setq diff-minimap--deletion-markers
+            (nconc diff-minimap--deletion-markers
+                   (diff-minimap--hunk-deletion-markers
+                    hunk-lines hunk-new-start)))
       (setq result (nconc result
                           (diff-minimap--process-hunk-lines
-                           (nreverse hunk-lines) hunk-new-start))))
+                           hunk-lines hunk-new-start))))
     (diff-minimap--merge-ranges result)))
 
 (defun diff-minimap--process-hunk-lines (hunk-lines hunk-new-start)
@@ -1238,6 +1324,13 @@ registered with `get-buffer-window'."
                                         (or src-win (selected-window)) t)
                                        row-px))))))
              (scale (/ (float total) nrows))
+             (deletion-blocks
+              (unless dual-col
+                (diff-minimap--deletion-block-ranges
+                 diff-data line-ranges scale nrows
+                 (with-current-buffer this-buf
+                   diff-minimap--deletion-markers))))
+             (row-source-override (make-vector nrows nil))
              (row-diff (make-vector nrows nil))
              (row-diff-A (when dual-col (make-vector nrows nil)))
              (row-diff-B (when dual-col (make-vector nrows nil))))
@@ -1271,6 +1364,10 @@ registered with `get-buffer-window'."
                             sl el scale nrows)))
                 (cl-loop for r from (car rows) to (cdr rows)
                          do (aset row-diff r ty))))
+            (dolist (block deletion-blocks)
+              (cl-loop for row from (nth 0 block) to (nth 1 block)
+                       do (aset row-diff row 'removed)
+                          (aset row-source-override row (nth 2 block))))
             (diff-minimap--fringe-update diff-data)))
         (let* ((fbg (lambda (f attr d)
                       (if (facep f)
@@ -1294,10 +1391,13 @@ registered with `get-buffer-window'."
               (diff-minimap--clear-overlays)
               (dotimes (i nrows)
                 (let* ((vline (1+ (floor (* i scale))))
-                       (sline (if dual-col
-                                  vline
-                                (diff-minimap--visible-to-line
-                                 vline line-ranges))))
+                       (sline (cond
+                               ((and (not dual-col)
+                                     (aref row-source-override i))
+                                (aref row-source-override i))
+                               (dual-col vline)
+                               (t (diff-minimap--visible-to-line
+                                   vline line-ranges)))))
                   (insert
                    (propertize " " 'face nrm-face
                                'source-line sline 'source-buf this-buf)

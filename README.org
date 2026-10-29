@@ -172,6 +172,8 @@ The minimap rows, source-buffer fringe indicators, and inline previews all align
    - =diff-minimap-inline-changed=
    - =diff-minimap-inline-removed=
 
+Replacement hunks have both added and removed sides.  The minimap records deletion blocks separately and renders the removed lines as a red block immediately above the corresponding added block.  Its height scales with the number of deleted lines, so a large deletion is not rendered as a purely green change.
+
 Fringe indicators use the diff face's foreground colour when available, so they stay visible against the block background.  The inline fallback faces carry explicit light/dark red, green, and amber palettes, so themes that leave the diff faces unspecified still get a consistent, readable colour scheme.  Customising an inline face changes the fallback used by the corresponding view.
 
 Other derived colours (=norm-bg=, =view-bg=, =cur-bg=) still come from =default=, =region=, and =cursor= respectively.
