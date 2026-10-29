@@ -81,6 +81,8 @@ Only the specific change group (the contiguous =-= /=+= block) containing point 
 
 Changed line groups are also refined at word and character level, using the same comparison as =diff-refine-hunk= in =vc-diff= / =diff-mode=.  Only the words that actually changed get the stronger =diff-minimap-inline-word-added= / =diff-minimap-inline-word-removed= highlight, while the rest of the line keeps the normal inline background.  Set =diff-minimap-inline-word-diff= to =nil= to use whole-line highlighting only.
 
+=M-x diff-minimap-toggle-collapse= collapses unchanged regions so only the diff hunks and their context remain visible, similar to the collapse-unchanged-regions command in VSCode's diff editor.  The number of context lines is controlled by =diff-minimap-collapse-context-lines= (default 3); a numeric prefix argument overrides it for the current collapse.  Collapsing is implemented with overlays, so the buffer text is not modified.  The collapsed ranges update after live-diff refreshes and saves, and invoking the command again expands everything.  While collapsed, the minimap scales to the visible lines rather than the whole file, so hunks occupy a representative, larger share of the sidebar.  Hunk blocks cover the full vertical span of their visible lines, which means even a single-line hunk becomes taller when the surrounding unchanged lines are hidden.
+
 Inline hunks follow the text with markers.  When =diff-minimap-live-diff= is non-nil (the default), editing recomputes the diff from the unsaved buffer text after =diff-minimap-live-diff-delay= seconds of idle time, so the minimap and inline hunks update as you type.  Reverting the text to its =HEAD= state removes the inline hunks without saving.  Set =diff-minimap-live-diff= to =nil= to update only on save and navigation.
 
 Reverting the whole buffer with =revert-buffer= disables the buffer-local mode, just like other buffer-local minor modes: the sidebar, inline overlays, fringe indicators, and timers are cleaned up instead of being left stale.  Re-enable it with =C-z m= if you want the minimap after a manual revert.  Auto-revert passes =preserve-modes=, so an automatically reverted buffer keeps the mode and refreshes its sidebar and inline hunks from the reread file.
@@ -133,6 +135,7 @@ Set it in your config:
 | =diff-minimap-wheel-scroll-lines= | 3           | Source lines scrolled per wheel notch over the minimap       |
 | =diff-minimap-inline-preview=    | t           | Show editable inline diffs on open and navigation            |
 | =diff-minimap-inline-word-diff=  | t           | Highlight word-level changes inside inline hunks             |
+| =diff-minimap-collapse-context-lines= | 3       | Unchanged lines kept visible around hunks when collapsed     |
 | =diff-minimap-reveal-hidden-content= | t        | Unfold hidden content at the destination hunk                |
 | =diff-minimap-live-diff=         | t           | Recompute the diff from unsaved buffer text while typing     |
 | =diff-minimap-live-diff-delay=   | 0.2         | Idle seconds before a live diff refresh                      |

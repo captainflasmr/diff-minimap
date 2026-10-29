@@ -33,6 +33,7 @@
 ;;   M-x diff-minimap-toggle      ;; open/close the minimap
 ;;   C-x v ] / C-x v [            ;; step through diff hunks
 ;;   C-c r                        ;; revert the hunk at point inline
+;;   M-x diff-minimap-toggle-collapse ;; show hunks plus context only
 ;;
 ;; The toggle is deliberately left unbound so loading the package does not
 ;; shadow stock VC keys (`C-x v m' is `vc-merge').  Bind it in your own
@@ -193,6 +194,14 @@ whole change can be inspected."
   :type 'boolean
   :group 'diff-minimap)
 
+(defcustom diff-minimap-collapse-context-lines 3
+  "Unchanged lines kept visible around each diff hunk when collapsed.
+Set this to 0 to show only the changed lines.  A numeric prefix
+argument to `diff-minimap-toggle-collapse' overrides it for that
+collapse."
+  :type 'integer
+  :group 'diff-minimap)
+
 (defcustom diff-minimap-live-diff t
   "Whether to recompute the diff from unsaved buffer text while typing.
 When non-nil, editing updates the minimap and any inline hunks after
@@ -233,6 +242,11 @@ The foreground follows `diff-minimap-inline-removed'."
 (defface diff-minimap-search-face
   '((t :background "#ffff00" :extend t))
   "Face for search-match highlights in the minimap."
+  :group 'diff-minimap)
+
+(defface diff-minimap-collapsed-face
+  '((t :inherit shadow :italic t))
+  "Face for the indicator shown where unchanged lines are collapsed."
   :group 'diff-minimap)
 
 (defface diff-minimap-inline-removed
@@ -305,6 +319,23 @@ colour; this face is used only when it does not."
 These hunks stay collapsed during navigation and automatic refreshes
 until they are shown again with `diff-minimap-show-hunk' or
 `diff-minimap-show-all-hunks'.")
+
+(defvar-local diff-minimap--collapsed nil
+  "Whether unchanged regions are currently collapsed in this buffer.")
+
+(defvar-local diff-minimap--collapse-context nil
+  "Effective context lines for the current collapse.
+Nil means use `diff-minimap-collapse-context-lines'.")
+
+(defvar-local diff-minimap--collapse-overlays nil
+  "Overlays hiding unchanged regions while `diff-minimap--collapsed' is non-nil.")
+
+(defvar-local diff-minimap--collapsed-ranges nil
+  "Visible source-line ranges for the current collapse, or nil.
+Each range is (START . END), 1-indexed and inclusive.")
+
+(defvar-local diff-minimap--last-visible-ranges nil
+  "Visible source-line ranges used by the last minimap render.")
 
 (defvar-local diff-minimap--inline-suspended nil
   "Non-nil when inline hunks were hidden for an Ediff session.
@@ -414,6 +445,50 @@ Accounts for the trailing newline that Emacs adds on save."
     (if (save-excursion (goto-char (point-max)) (bolp))
         (max 1 (1- n))
       (max 1 n))))
+
+(defun diff-minimap--visible-line-total (ranges)
+  "Return the number of source lines covered by visible RANGES."
+  (cl-loop for (start . end) in ranges
+           sum (1+ (- end start))))
+
+(defun diff-minimap--line-to-visible (line ranges)
+  "Return the 1-based visible ordinal for source LINE in RANGES.
+A line hidden between ranges snaps to the next visible line; a line
+past the last range snaps to the last visible line."
+  (let ((offset 0)
+        (last-visible 1))
+    (catch 'done
+      (dolist (range ranges)
+        (let ((start (car range))
+              (end (cdr range)))
+          (setq last-visible (+ offset (1+ (- end start))))
+          (cond
+           ((< line start) (throw 'done (1+ offset)))
+           ((<= line end) (throw 'done (+ offset (1+ (- line start)))))
+           (t (cl-incf offset (1+ (- end start)))))))
+      (max 1 last-visible))))
+
+(defun diff-minimap--visible-to-line (ordinal ranges)
+  "Return the source line for 1-based visible ORDINAL in RANGES."
+  (let ((remaining (max 1 ordinal))
+        (last-line 1))
+    (catch 'found
+      (dolist (range ranges)
+        (let* ((start (car range))
+               (length (1+ (- (cdr range) start))))
+          (setq last-line (cdr range))
+          (if (<= remaining length)
+              (throw 'found (+ start (1- remaining)))
+            (cl-decf remaining length))))
+      (max 1 last-line))))
+
+(defun diff-minimap--visible-range-rows (start end scale nrows)
+  "Return (FIRST . LAST) minimap rows covering visible lines START..END.
+SCALE is visible lines per row and NROWS is the minimap height."
+  (let* ((first (floor (/ (1- start) scale)))
+         (last (max first (1- (ceiling (/ end scale))))))
+    (cons (max 0 (min (1- nrows) first))
+          (max 0 (min (1- nrows) last)))))
 
 (defun diff-minimap--face-colour (face attribute)
   "Return FACE's usable ATTRIBUTE as a colour string, or nil.
@@ -821,15 +896,19 @@ Called on every command — cheap overlay moves, not a full rebuild."
          (dual-col (and a-buf (buffer-live-p a-buf) b-buf (buffer-live-p b-buf))))
     (when (and mm-buf (get-buffer-window mm-buf 0))
       (with-current-buffer this-buf
-         (let* ((total (if dual-col
+         (let* ((ranges (unless dual-col
+                          (or diff-minimap--last-visible-ranges
+                              (list (cons 1 (diff-minimap--buffer-lines))))))
+                (total (if dual-col
                            (nth 0 (with-current-buffer diff-minimap--ediff-control-buffer (diff-minimap--collect-ediff-dual)))
-                         (diff-minimap--buffer-lines)))
+                         (diff-minimap--visible-line-total ranges)))
                 (nrows (or diff-minimap--last-nrows 1))
                 (scale (/ (float total) nrows))
                 (ws-win (if dual-col (get-buffer-window a-buf 0) (get-buffer-window this-buf 0)))
                 (pt-line (if dual-col
                              (diff-minimap--physical-to-virtual-A (with-current-buffer a-buf (line-number-at-pos)) diff-minimap--ediff-control-buffer)
-                           (line-number-at-pos)))
+                           (diff-minimap--line-to-visible
+                            (line-number-at-pos) ranges)))
                 (cur-row (min (1- nrows)
                               (floor (/ (1- pt-line) scale))))
                 (vis-rows (max 1 (ceiling (window-text-height (or ws-win (selected-window))) scale)))
@@ -838,7 +917,9 @@ Called on every command — cheap overlay moves, not a full rebuild."
                                                                     (with-current-buffer a-buf
                                                                       (line-number-at-pos (window-start ws-win)))
                                                                     diff-minimap--ediff-control-buffer)
-                                                                 (line-number-at-pos (window-start ws-win))))
+                                                                 (diff-minimap--line-to-visible
+                                                                  (line-number-at-pos (window-start ws-win))
+                                                                  ranges)))
                                                           scale)))))
                           ;; When window-start is stale (e.g. after
                           ;; beginning-of-buffer during post-command-hook)
@@ -1124,9 +1205,16 @@ registered with `get-buffer-window'."
              (ediff-dual (when dual-col
                            (with-current-buffer diff-minimap--ediff-control-buffer
                              (diff-minimap--collect-ediff-dual))))
+             (line-ranges
+              (unless dual-col
+                (with-current-buffer this-buf
+                  (if (and diff-minimap--collapsed
+                           diff-minimap--collapsed-ranges)
+                      diff-minimap--collapsed-ranges
+                    (list (cons 1 (diff-minimap--buffer-lines)))))))
              (total (if dual-col
                         (nth 0 ediff-dual)
-                      (with-current-buffer this-buf (diff-minimap--buffer-lines))))
+                      (diff-minimap--visible-line-total line-ranges)))
              (diff-A (when dual-col (nth 1 ediff-dual)))
              (diff-B (when dual-col (nth 2 ediff-dual)))
              (src-win (if dual-col (get-buffer-window a-buf 0) (get-buffer-window this-buf 0)))
@@ -1160,23 +1248,28 @@ registered with `get-buffer-window'."
             (progn
               (dolist (change diff-A)
                 (let* ((ty (car change)) (sl (nth 1 change)) (el (nth 2 change))
-                       (fr (floor (/ (1- sl) scale)))
-                       (lr (min (1- nrows) (floor (/ (1- el) scale)))))
-                  (cl-loop for r from fr to lr do (aset row-diff-A r ty))))
+                       (rows (diff-minimap--visible-range-rows
+                              sl el scale nrows)))
+                  (cl-loop for r from (car rows) to (cdr rows)
+                           do (aset row-diff-A r ty))))
               (dolist (change diff-B)
                 (let* ((ty (car change)) (sl (nth 1 change)) (el (nth 2 change))
-                       (fr (floor (/ (1- sl) scale)))
-                       (lr (min (1- nrows) (floor (/ (1- el) scale)))))
-                  (cl-loop for r from fr to lr do (aset row-diff-B r ty)))))
+                       (rows (diff-minimap--visible-range-rows
+                              sl el scale nrows)))
+                  (cl-loop for r from (car rows) to (cdr rows)
+                           do (aset row-diff-B r ty)))))
           (with-current-buffer this-buf
-            (setq diff-minimap--last-tick (buffer-chars-modified-tick))
+            (setq diff-minimap--last-tick (buffer-chars-modified-tick)
+                  diff-minimap--last-visible-ranges line-ranges)
             (dolist (change diff-data)
               (let* ((ty (car change))
-                     (sl (min total (nth 1 change)))
-                     (el (min total (nth 2 change)))
-                     (fr (floor (/ (1- sl) scale)))
-                     (lr (min (1- nrows) (floor (/ (1- el) scale)))))
-                (cl-loop for r from fr to lr
+                     (sl (diff-minimap--line-to-visible
+                          (nth 1 change) line-ranges))
+                     (el (diff-minimap--line-to-visible
+                          (nth 2 change) line-ranges))
+                     (rows (diff-minimap--visible-range-rows
+                            sl el scale nrows)))
+                (cl-loop for r from (car rows) to (cdr rows)
                          do (aset row-diff r ty))))
             (diff-minimap--fringe-update diff-data)))
         (let* ((fbg (lambda (f attr d)
@@ -1200,7 +1293,11 @@ registered with `get-buffer-window'."
               (erase-buffer)
               (diff-minimap--clear-overlays)
               (dotimes (i nrows)
-                (let ((sline (1+ (floor (* i scale)))))
+                (let* ((vline (1+ (floor (* i scale))))
+                       (sline (if dual-col
+                                  vline
+                                (diff-minimap--visible-to-line
+                                 vline line-ranges))))
                   (insert
                    (propertize " " 'face nrm-face
                                'source-line sline 'source-buf this-buf)
@@ -1867,6 +1964,81 @@ are left alone; missing ones are added."
         (ignore-errors
           (diff-minimap--show-hunk-overlay hunk (nth 1 hunk) full-patch))))))
 
+(defun diff-minimap--remove-collapse-overlays ()
+  "Remove all overlays that hide collapsed unchanged regions."
+  (dolist (ov diff-minimap--collapse-overlays)
+    (when (overlayp ov)
+      (delete-overlay ov)))
+  (setq diff-minimap--collapse-overlays nil))
+
+(defun diff-minimap--collapse-visible-ranges (data)
+  "Return merged line ranges to keep visible for diff DATA.
+Each range is (START . END), 1-indexed and inclusive.  Unchanged
+context lines are added around every hunk according to
+`diff-minimap-collapse-context-lines'."
+  (let* ((last (diff-minimap--buffer-lines))
+         (context (max 0 (or diff-minimap--collapse-context
+                             diff-minimap-collapse-context-lines)))
+         (ranges
+          (sort
+           (mapcar
+            (lambda (hunk)
+              (cons (max 1 (- (nth 1 hunk) context))
+                    (min last (+ (max (nth 1 hunk) (nth 2 hunk)) context))))
+            data)
+           (lambda (a b) (< (car a) (car b)))))
+         merged)
+    (dolist (range ranges)
+      (if (and merged (<= (car range) (1+ (cdr (car merged)))))
+          (setcdr (car merged) (max (cdr (car merged)) (cdr range)))
+        (push range merged)))
+    (nreverse merged)))
+
+(defun diff-minimap--collapse-hide-region (start end)
+  "Hide unchanged lines START through END, inclusive."
+  (when (<= start end)
+    (save-excursion
+      (goto-char (point-min))
+      (forward-line (1- start))
+      (let ((beg (point)))
+        (goto-char (point-min))
+        (forward-line end)
+        (let ((finish (point)))
+          (when (> finish beg)
+            (let* ((count (1+ (- end start)))
+                   (ov (make-overlay beg finish)))
+              (overlay-put ov 'diff-minimap-collapse t)
+              (overlay-put ov 'invisible t)
+              (overlay-put ov 'evaporate t)
+              (overlay-put ov 'after-string
+                           (propertize
+                            (format "… %d line%s hidden\n"
+                                    count (if (= count 1) "" "s"))
+                            'face 'diff-minimap-collapsed-face))
+              (push ov diff-minimap--collapse-overlays))))))))
+
+(defun diff-minimap--update-collapse (&optional data)
+  "Recompute collapsed unchanged regions when collapsing is active.
+DATA, when non-nil, is precomputed diff data."
+  (when diff-minimap--collapsed
+    (diff-minimap--remove-collapse-overlays)
+    (let ((hunks (or data (diff-minimap--collect-diff-data))))
+      (if (null hunks)
+          (setq diff-minimap--collapsed nil
+                diff-minimap--collapse-context nil
+                diff-minimap--collapsed-ranges nil)
+        (let ((previous 0)
+              (last (diff-minimap--buffer-lines))
+              (ranges (diff-minimap--collapse-visible-ranges hunks)))
+          (setq diff-minimap--collapsed-ranges ranges)
+          (dolist (range ranges)
+            (when (> (car range) (1+ previous))
+              (diff-minimap--collapse-hide-region
+               (1+ previous) (1- (car range))))
+            (setq previous (max previous (cdr range))))
+          (when (< previous last)
+            (diff-minimap--collapse-hide-region (1+ previous) last)))))))
+
 (defun diff-minimap--refresh-display (&optional use-buffer-diff)
   "Recompute inline hunks and the minimap from the current buffer text.
 Unlike `diff-minimap--refresh-live-diff', this does not consult
@@ -1880,6 +2052,7 @@ is nil."
                (bound-and-true-p diff-minimap-mode))
       (diff-minimap--remove-hunk-overlays)
       (diff-minimap--show-all-inline-hunks))
+    (diff-minimap--update-collapse)
     (when (and (eq (current-buffer)
                    (window-buffer (selected-window)))
                (or (null diff-minimap--last-buffer)
@@ -1951,6 +2124,40 @@ explicit hide and show all hunks."
           (setq diff-minimap--inline-active nil))
       (diff-minimap--clear-hidden-hunks)
       (diff-minimap--show-all-inline-hunks))))
+
+;;;###autoload
+(defun diff-minimap-toggle-collapse (&optional arg)
+  "Toggle hiding unchanged lines in the current buffer.
+When collapsing, keep `diff-minimap-collapse-context-lines'
+unchanged lines around every hunk.  With a numeric prefix ARG, use
+that many context lines for this collapse; when already collapsed,
+a prefix updates the context without expanding first."
+  (interactive "P")
+  (diff-minimap--ensure-mode)
+  (if (and diff-minimap--collapsed (null arg))
+      (progn
+        (diff-minimap--remove-collapse-overlays)
+        (setq diff-minimap--collapsed nil
+              diff-minimap--collapse-context nil
+              diff-minimap--collapsed-ranges nil)
+        (when (get-buffer-window diff-minimap--buffer-name 0)
+          (diff-minimap--render))
+        (message "Expanded unchanged regions"))
+    (let* ((context (max 0 (if arg
+                               (prefix-numeric-value arg)
+                             (or diff-minimap--collapse-context
+                                 diff-minimap-collapse-context-lines))))
+           (diff-minimap-collapse-context-lines context)
+           (data (diff-minimap--collect-diff-data)))
+      (unless data
+        (user-error "No diff hunks to collapse"))
+      (setq diff-minimap--collapsed t
+            diff-minimap--collapse-context (and arg context))
+      (diff-minimap--update-collapse data)
+      (when (get-buffer-window diff-minimap--buffer-name 0)
+        (diff-minimap--render))
+      (message "Collapsed unchanged regions with %d context line%s"
+               context (if (= context 1) "" "s")))))
 
 (defun diff-minimap-show-hunk ()
   "Show or hide the diff hunk at point as an editable inline diff.
@@ -2041,6 +2248,8 @@ Overlays whose hunk no longer exists in the new diff are dropped."
                 (ignore-errors
                   (diff-minimap--show-hunk-overlay hunk (nth 1 hunk) full-patch)))))
           (set-marker marker nil))))))
+  (when diff-minimap--collapsed
+    (diff-minimap--update-collapse))
 
 (defun diff-minimap--current-buffer-has-changes-p ()
   "Return non-nil if the current buffer has local changes.
@@ -2080,9 +2289,14 @@ leave stale inline overlays and timers behind."
       (cancel-timer diff-minimap--live-diff-timer)
       (setq diff-minimap--live-diff-timer nil))
     (diff-minimap--remove-hunk-overlays)
+    (diff-minimap--remove-collapse-overlays)
     (diff-minimap--clear-hidden-hunks)
     (diff-minimap--fringe-clear)
     (setq diff-minimap--inline-active nil
+          diff-minimap--collapsed nil
+          diff-minimap--collapse-context nil
+          diff-minimap--collapsed-ranges nil
+          diff-minimap--last-visible-ranges nil
           diff-minimap--inline-suspended nil
           diff-minimap--sidebar-intended nil)
     (when (eq diff-minimap--last-buffer (current-buffer))
@@ -2102,7 +2316,8 @@ sidebar from the reread text in that case."
                diff-minimap--inline-active
                (not diff-minimap--ediff-control-buffer)
                (not diff-minimap--inline-suspended))
-      (diff-minimap--show-all-inline-hunks))))
+      (diff-minimap--show-all-inline-hunks))
+    (diff-minimap--update-collapse)))
 
 (defun diff-minimap--clear-sidebar-display ()
   "Erase the minimap buffer contents."
@@ -2369,14 +2584,18 @@ Both ends are revealed so the whole changed region can be inspected."
     (let ((mm-buf (get-buffer diff-minimap--buffer-name)))
       (when (and mm-buf diff-minimap--last-nrows)
         (diff-minimap--search-clear)
-        (let* ((total (diff-minimap--buffer-lines))
+        (let* ((ranges (or diff-minimap--last-visible-ranges
+                           (list (cons 1 (diff-minimap--buffer-lines)))))
+               (total (diff-minimap--visible-line-total ranges))
                (scale (/ (float total) diff-minimap--last-nrows))
                (regexp (if isearch-regexp isearch-string
                          (regexp-quote isearch-string))))
           (save-excursion
             (goto-char (point-min))
             (while (re-search-forward regexp nil t)
-              (let* ((line (line-number-at-pos (match-beginning 0)))
+              (let* ((line (diff-minimap--line-to-visible
+                            (line-number-at-pos (match-beginning 0))
+                            ranges))
                      (row (min (1- diff-minimap--last-nrows)
                                (floor (/ (1- line) scale)))))
                 (with-current-buffer mm-buf
@@ -2621,10 +2840,15 @@ point to its HEAD text without saving.
       (cancel-timer diff-minimap--live-diff-timer)
       (setq diff-minimap--live-diff-timer nil))
     (diff-minimap--remove-hunk-overlays)
+    (diff-minimap--remove-collapse-overlays)
     (diff-minimap--clear-hidden-hunks)
     (diff-minimap--fringe-clear)
     (setq diff-minimap--sidebar-intended nil
           diff-minimap--inline-active nil
+          diff-minimap--collapsed nil
+          diff-minimap--collapse-context nil
+          diff-minimap--collapsed-ranges nil
+          diff-minimap--last-visible-ranges nil
           diff-minimap--inline-suspended nil)
     (when (and (get-buffer-window diff-minimap--buffer-name 0)
                (or (eq diff-minimap--last-buffer (current-buffer))
