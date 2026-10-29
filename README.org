@@ -53,6 +53,8 @@ buffer directly from it:
 
 ~diff-minimap-next-hunk~ and ~diff-minimap-previous-hunk~ jump between diff hunks using the configured backend (the full hunk range pulses on arrival).  They are bound to =C-x v ]= and =C-x v [= in =diff-minimap-mode-map=, so they apply only in buffers where the mode is enabled.
 
+When a hunk has deleted and added lines, the jump lands on the real added text; the deleted preview remains immediately above it.  At the very beginning of a buffer, the preview is temporarily hidden on arrival and restored when point moves away.
+
 When =diff-minimap-reveal-hidden-content= is non-nil (the default), a jump also unfolds the destination if it is hidden — for example inside a folded Org subtree, an outline entry, a hideshow block, or another invisible overlay.  Both ends of the hunk are revealed so the whole change can be inspected.  This uses each mode's own reveal hooks, so unrelated folds are left alone.
 
 | Keybinding | Command                          |
@@ -81,7 +83,7 @@ Only the specific change group (the contiguous =-= /=+= block) containing point 
 
 Changed line groups are also refined at word and character level, using the same comparison as =diff-refine-hunk= in =vc-diff= / =diff-mode=.  Only the words that actually changed get the stronger =diff-minimap-inline-word-added= / =diff-minimap-inline-word-removed= highlight, while the rest of the line keeps the normal inline background.  Set =diff-minimap-inline-word-diff= to =nil= to use whole-line highlighting only.
 
-=M-x diff-minimap-toggle-collapse= collapses unchanged regions so only the diff hunks and their context remain visible, similar to the collapse-unchanged-regions command in VSCode's diff editor.  The number of context lines is controlled by =diff-minimap-collapse-context-lines= (default 3); a numeric prefix argument overrides it for the current collapse.  Collapsing is implemented with overlays, so the buffer text is not modified.  The collapsed ranges update after live-diff refreshes and saves, and invoking the command again expands everything.  While collapsed, the minimap scales to the visible lines rather than the whole file, so hunks occupy a representative, larger share of the sidebar.  Hunk blocks cover the full vertical span of their visible lines, which means even a single-line hunk becomes taller when the surrounding unchanged lines are hidden.
+=M-x diff-minimap-toggle-collapse= collapses unchanged regions so only the diff hunks and their context remain visible, similar to the collapse-unchanged-regions command in VSCode's diff editor.  The number of context lines is controlled by =diff-minimap-collapse-context-lines= (default 3); a numeric prefix argument overrides it for the current collapse.  Collapsing is implemented with overlays, so the buffer text is not modified.  The collapsed ranges update after live-diff refreshes and saves, and invoking the command again expands everything.  While collapsed, the minimap scales to the visible source lines and deleted lines rather than the whole file, so hunks occupy a representative share of the sidebar.  Hunk blocks cover the full vertical span of their lines, which means even a single-line hunk becomes taller when the surrounding unchanged lines are hidden.
 
 Inline hunks follow the text with markers.  When =diff-minimap-live-diff= is non-nil (the default), editing recomputes the diff from the unsaved buffer text after =diff-minimap-live-diff-delay= seconds of idle time, so the minimap and inline hunks update as you type.  Reverting the text to its =HEAD= state removes the inline hunks without saving.  Set =diff-minimap-live-diff= to =nil= to update only on save and navigation.
 
@@ -105,16 +107,16 @@ Inline diff previews are suspended while the Ediff windows are visible, so they 
 
 The viewport indicator can be selected via =diff-minimap-viewport-style=.  Available styles:
 
-| Style      | Description                                                                  |
-|------------+------------------------------------------------------------------------------|
-| =edge-bar= | Solid bars at the top and bottom rows of the viewport.                       |
-| =filled=   | Solid background across the entire viewport (diffs visible on top, default). |
-| =stipple=  | Bitmap pattern fill + edge bars (diffs visible through).                     |
+| Style      | Description                                                      |
+|------------+------------------------------------------------------------------|
+| =edge-bar= | Subtle top and bottom bars (default).                            |
+| =filled=   | Solid viewport background, with diff colours drawn on top.      |
+| =stipple=  | Bitmap pattern fill and edge bars (requires X11).                |
 
 Set it in your config:
 
 #+begin_src emacs-lisp
-(setq diff-minimap-viewport-style 'stipple)
+(setq diff-minimap-viewport-style 'filled)
 #+end_src
 
 * Customisation
@@ -126,7 +128,7 @@ Set it in your config:
 | =diff-minimap-font-scale=        | 0.1          | Fraction of default font height for the minimap (1.0 normal) |
 | =diff-minimap-width=             | 6            | Width in characters of the side window (at the small font)   |
 | =diff-minimap-side=              | 'right       | Side to display the minimap (=left= or =right=)              |
-| =diff-minimap-viewport-style=    | 'filled      | How to render the viewport indicator (see above)             |
+| =diff-minimap-viewport-style=    | 'edge-bar    | How to render the viewport indicator (see above)             |
 | =diff-minimap-stipple-pattern=   | 'dots-sparse | Bitmap pattern for the =stipple= viewport style              |
 | =diff-minimap-diff-backend=      | 'auto        | Diff data source: =auto=, =diff-hl=, or =vc=                 |
 | =diff-minimap-fringe-indicators= | t            | Show coloured fringe bitmaps on changed lines                |
@@ -172,7 +174,7 @@ The minimap rows, source-buffer fringe indicators, and inline previews all align
    - =diff-minimap-inline-changed=
    - =diff-minimap-inline-removed=
 
-Replacement hunks have both added and removed sides.  The minimap records deletion blocks separately and renders the removed lines as a red block immediately above the corresponding added block.  Its height scales with the number of deleted lines, so a large deletion is not rendered as a purely green change.
+Replacement hunks have both added and removed sides.  The minimap records deletion blocks separately and renders the removed lines as a red block immediately above the corresponding added block.  Source and deleted lines share the same scale, so large deletions do not extend into unrelated earlier hunks.  Clicking a deletion block jumps to its source insertion point; at low resolutions, a row shared by deleted and added lines shows both colours.
 
 Fringe indicators use the diff face's foreground colour when available, so they stay visible against the block background.  The inline fallback faces carry explicit light/dark red, green, and amber palettes, so themes that leave the diff faces unspecified still get a consistent, readable colour scheme.  Customising an inline face changes the fallback used by the corresponding view.
 

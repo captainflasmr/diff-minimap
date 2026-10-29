@@ -94,12 +94,12 @@
   :type '(choice (const left) (const right))
   :group 'diff-minimap)
 
-(defcustom diff-minimap-viewport-style 'filled
+(defcustom diff-minimap-viewport-style 'edge-bar
   "How to render the viewport indicator in the minimap.
-`edge-bar' — solid bars at the top and bottom rows of the viewport.
-`filled'   — solid background across the entire viewport (diffs visible on top).
-`stipple'  — bitmap dot pattern fill + edge bars (diffs visible through)."
-  :type '(choice (const :tag "Edge bars (top & bottom rows)" edge-bar)
+`edge-bar' — subtle top and bottom bars (the default).
+`filled'   — solid background, with diff colours drawn on top.
+`stipple'  — bitmap dot pattern fill and edge bars."
+  :type '(choice (const :tag "Edge bars (top and bottom)" edge-bar)
                   (const :tag "Filled block (full background)" filled)
                   (const :tag "Stipple + edge bars (diffs visible)" stipple))
   :group 'diff-minimap)
@@ -337,6 +337,14 @@ Each range is (START . END), 1-indexed and inclusive.")
 (defvar-local diff-minimap--last-visible-ranges nil
   "Visible source-line ranges used by the last minimap render.")
 
+(defvar-local diff-minimap--last-display-deletions nil
+  "Deletion segments included in the last minimap render.
+Each segment is (VISIBLE-ORDINAL COUNT SOURCE-LINE); see
+`diff-minimap--display-deletions'.")
+
+(defvar-local diff-minimap--suspended-jump-preview nil
+  "Cons (HUNK . TEXT) for a preview temporarily hidden during a jump.")
+
 (defvar-local diff-minimap--deletion-markers nil
   "Deletion blocks from the last git diff collection.
 Each entry is (LINE . COUNT), where COUNT old lines were deleted at
@@ -496,49 +504,71 @@ SCALE is visible lines per row and NROWS is the minimap height."
     (cons (max 0 (min (1- nrows) first))
           (max 0 (min (1- nrows) last)))))
 
-(defun diff-minimap--deletion-block-ranges (diff-data line-ranges scale nrows
-                                                      markers)
-  "Return row ranges for deleted blocks in the minimap.
-Each result is (FIRST-ROW LAST-ROW SOURCE-LINE), where SOURCE-LINE is
-the new-file line where the deleted text is inserted.  DIFF-DATA,
-LINE-RANGES, SCALE, and NROWS describe the minimap; MARKERS come from
-`diff-minimap--deletion-markers'."
-  (let ((counts (make-hash-table :test 'equal))
-        blocks)
-    (dolist (marker markers)
-      (let ((point (car marker))
+(defun diff-minimap--display-deletions (ranges markers)
+  "Map deletion MARKERS into visible source-line RANGES.
+Return (VISIBLE-ORDINAL COUNT SOURCE-LINE) segments in source order.
+Each deletion is inserted immediately before its visible ordinal.  An
+end-of-file deletion is inserted after the last visible source line."
+  (let* ((last-line (cdr (car (last ranges))))
+         (after-last (1+ (diff-minimap--visible-line-total ranges)))
+         (ordered (sort (copy-sequence markers)
+                        (lambda (a b) (< (car a) (car b)))))
+         segments)
+    (dolist (marker ordered (nreverse segments))
+      (let ((line (car marker))
             (count (cdr marker)))
-        (let ((change (or (cl-find-if
-                           (lambda (change)
-                             (and (memq (car change) '(added changed))
-                                  (<= (nth 1 change) point
-                                      (1+ (max (nth 1 change)
-                                               (nth 2 change))))))
-                           diff-data)
-                          (cl-find-if
-                           (lambda (change)
-                             (and (eq (car change) 'removed)
-                                  (<= (nth 1 change) point
-                                      (max (nth 1 change)
-                                           (nth 2 change)))))
-                           diff-data)
-                          (list 'removed point point))))
-          (puthash change (+ count (gethash change counts 0)) counts))))
-    (maphash
-     (lambda (change count)
-       (let* ((insertion-line (nth 1 change))
-              (visible-line (diff-minimap--line-to-visible
-                             insertion-line line-ranges))
-              (rows (diff-minimap--visible-range-rows
-                     visible-line visible-line scale nrows))
-              (first-row (car rows))
-              (height (max 1 (ceiling (/ count scale))))
-              (block-first (max 0 (- first-row height)))
-              (block-last (max 0 (1- first-row))))
-         (push (list block-first block-last insertion-line) blocks)))
-     counts)
-    (sort blocks (lambda (a b)
-                   (< (nth 2 a) (nth 2 b))))))
+        (when (> count 0)
+          (push (list (if (> line last-line)
+                          after-last
+                        (diff-minimap--line-to-visible line ranges))
+                      count line)
+                segments))))))
+
+(defun diff-minimap--display-line-total (ranges deletions)
+  "Return the total display lines in RANGES and DELETIONS."
+  (+ (diff-minimap--visible-line-total ranges)
+     (cl-loop for deletion in deletions sum (nth 1 deletion))))
+
+(defun diff-minimap--line-to-display (line ranges deletions)
+  "Return the display ordinal of source LINE in RANGES and DELETIONS."
+  (let ((visible (diff-minimap--line-to-visible line ranges)))
+    (+ visible
+       (cl-loop for (position count _line) in deletions
+                when (<= position visible) sum count))))
+
+(defun diff-minimap--display-to-line (ordinal ranges deletions)
+  "Map display ORDINAL to a source line in RANGES and DELETIONS.
+Deleted lines map to the source insertion line instead of unrelated
+earlier lines."
+  (let ((ordinal (max 1 ordinal))
+        (offset 0))
+    (catch 'found
+      (dolist (deletion deletions)
+        (let* ((count (nth 1 deletion))
+               (first (+ (car deletion) offset))
+               (last (+ first count -1)))
+          (when (< ordinal first)
+            (throw 'found (diff-minimap--visible-to-line
+                           (- ordinal offset) ranges)))
+          (when (<= ordinal last)
+            (throw 'found (nth 2 deletion)))
+          (cl-incf offset count)))
+      (diff-minimap--visible-to-line (- ordinal offset) ranges))))
+
+(defun diff-minimap--deletion-block-ranges (deletions scale nrows)
+  "Return row ranges for DELETIONS using SCALE and NROWS.
+Each result is (FIRST-ROW LAST-ROW SOURCE-LINE).  The scale includes
+both source lines and deleted lines, so blocks do not extend into
+unrelated preceding content."
+  (let ((offset 0)
+        blocks)
+    (dolist (deletion deletions (nreverse blocks))
+      (let* ((count (nth 1 deletion))
+             (first (+ (car deletion) offset))
+             (last (+ first count -1))
+             (rows (diff-minimap--visible-range-rows first last scale nrows)))
+        (push (list (car rows) (cdr rows) (nth 2 deletion)) blocks)
+        (cl-incf offset count)))))
 
 (defun diff-minimap--face-colour (face attribute)
   "Return FACE's usable ATTRIBUTE as a colour string, or nil.
@@ -983,18 +1013,19 @@ Called on every command — cheap overlay moves, not a full rebuild."
     (when (and mm-buf (get-buffer-window mm-buf 0))
       (with-current-buffer this-buf
          (let* ((ranges (unless dual-col
-                          (or diff-minimap--last-visible-ranges
-                              (list (cons 1 (diff-minimap--buffer-lines))))))
+                           (or diff-minimap--last-visible-ranges
+                               (list (cons 1 (diff-minimap--buffer-lines))))))
+                (deletions (unless dual-col diff-minimap--last-display-deletions))
                 (total (if dual-col
                            (nth 0 (with-current-buffer diff-minimap--ediff-control-buffer (diff-minimap--collect-ediff-dual)))
-                         (diff-minimap--visible-line-total ranges)))
+                         (diff-minimap--display-line-total ranges deletions)))
                 (nrows (or diff-minimap--last-nrows 1))
                 (scale (/ (float total) nrows))
                 (ws-win (if dual-col (get-buffer-window a-buf 0) (get-buffer-window this-buf 0)))
                 (pt-line (if dual-col
                              (diff-minimap--physical-to-virtual-A (with-current-buffer a-buf (line-number-at-pos)) diff-minimap--ediff-control-buffer)
-                           (diff-minimap--line-to-visible
-                            (line-number-at-pos) ranges)))
+                           (diff-minimap--line-to-display
+                            (line-number-at-pos) ranges deletions)))
                 (cur-row (min (1- nrows)
                               (floor (/ (1- pt-line) scale))))
                 (vis-rows (max 1 (ceiling (window-text-height (or ws-win (selected-window))) scale)))
@@ -1003,9 +1034,9 @@ Called on every command — cheap overlay moves, not a full rebuild."
                                                                     (with-current-buffer a-buf
                                                                       (line-number-at-pos (window-start ws-win)))
                                                                     diff-minimap--ediff-control-buffer)
-                                                                 (diff-minimap--line-to-visible
+                                                                 (diff-minimap--line-to-display
                                                                   (line-number-at-pos (window-start ws-win))
-                                                                  ranges)))
+                                                                  ranges deletions)))
                                                           scale)))))
                           ;; When window-start is stale (e.g. after
                           ;; beginning-of-buffer during post-command-hook)
@@ -1298,9 +1329,14 @@ registered with `get-buffer-window'."
                            diff-minimap--collapsed-ranges)
                       diff-minimap--collapsed-ranges
                     (list (cons 1 (diff-minimap--buffer-lines)))))))
+             (deletions
+              (unless (or dual-col ediff-active)
+                (diff-minimap--display-deletions
+                 line-ranges
+                 (with-current-buffer this-buf diff-minimap--deletion-markers))))
              (total (if dual-col
                         (nth 0 ediff-dual)
-                      (diff-minimap--visible-line-total line-ranges)))
+                      (diff-minimap--display-line-total line-ranges deletions)))
              (diff-A (when dual-col (nth 1 ediff-dual)))
              (diff-B (when dual-col (nth 2 ediff-dual)))
              (src-win (if dual-col (get-buffer-window a-buf 0) (get-buffer-window this-buf 0)))
@@ -1327,9 +1363,7 @@ registered with `get-buffer-window'."
              (deletion-blocks
               (unless dual-col
                 (diff-minimap--deletion-block-ranges
-                 diff-data line-ranges scale nrows
-                 (with-current-buffer this-buf
-                   diff-minimap--deletion-markers))))
+                 deletions scale nrows)))
              (row-source-override (make-vector nrows nil))
              (row-diff (make-vector nrows nil))
              (row-diff-A (when dual-col (make-vector nrows nil)))
@@ -1353,21 +1387,28 @@ registered with `get-buffer-window'."
                            do (aset row-diff-B r ty)))))
           (with-current-buffer this-buf
             (setq diff-minimap--last-tick (buffer-chars-modified-tick)
-                  diff-minimap--last-visible-ranges line-ranges)
+                  diff-minimap--last-visible-ranges line-ranges
+                  diff-minimap--last-display-deletions deletions)
             (dolist (change diff-data)
-              (let* ((ty (car change))
-                     (sl (diff-minimap--line-to-visible
-                          (nth 1 change) line-ranges))
-                     (el (diff-minimap--line-to-visible
-                          (nth 2 change) line-ranges))
-                     (rows (diff-minimap--visible-range-rows
-                            sl el scale nrows)))
-                (cl-loop for r from (car rows) to (cdr rows)
-                         do (aset row-diff r ty))))
+              ;; A pure deletion with a marker occupies its virtual lines,
+              ;; not the surviving source line at the insertion point.
+              (unless (and (eq (car change) 'removed)
+                           (cl-some (lambda (deletion)
+                                      (<= (nth 1 change) (nth 2 deletion)
+                                          (max (nth 1 change) (nth 2 change))))
+                                    deletions))
+                (let* ((ty (car change))
+                       (sl (diff-minimap--line-to-display
+                            (nth 1 change) line-ranges deletions))
+                       (el (diff-minimap--line-to-display
+                            (nth 2 change) line-ranges deletions))
+                       (rows (diff-minimap--visible-range-rows
+                              sl el scale nrows)))
+                  (cl-loop for r from (car rows) to (cdr rows)
+                           do (aset row-diff r ty)))))
             (dolist (block deletion-blocks)
               (cl-loop for row from (nth 0 block) to (nth 1 block)
-                       do (aset row-diff row 'removed)
-                          (aset row-source-override row (nth 2 block))))
+                       do (aset row-source-override row (nth 2 block))))
             (diff-minimap--fringe-update diff-data)))
         (let* ((fbg (lambda (f attr d)
                       (if (facep f)
@@ -1392,12 +1433,10 @@ registered with `get-buffer-window'."
               (dotimes (i nrows)
                 (let* ((vline (1+ (floor (* i scale))))
                        (sline (cond
-                               ((and (not dual-col)
-                                     (aref row-source-override i))
-                                (aref row-source-override i))
                                (dual-col vline)
-                               (t (diff-minimap--visible-to-line
-                                   vline line-ranges)))))
+                               ((aref row-source-override i))
+                               (t (diff-minimap--display-to-line
+                                   vline line-ranges deletions)))))
                   (insert
                    (propertize " " 'face nrm-face
                                'source-line sline 'source-buf this-buf)
@@ -1425,17 +1464,28 @@ registered with `get-buffer-window'."
                           (overlay-put ov 'priority 3)
                           (overlay-put ov 'diff-minimap-overlay t))))
                   (let* ((dtype (aref row-diff i))
+                         (deleted (aref row-source-override i))
                          ;; `vc-diff' shows replacement lines with the added
                          ;; face, so modified rows use the same colour as
                          ;; pure additions in the sidebar.
-                         (face (cond ((memq dtype '(added changed)) ins-face)
-                                     ((eq dtype 'removed) del-face))))
-                    (when face
-                      (let ((ov (make-overlay (diff-minimap--row->pos i)
-                                              (diff-minimap--row->pos (1+ i))
-                                              mm-buf)))
-                        (overlay-put ov 'face face)
+                         (added (memq dtype '(added changed)))
+                         (pos (diff-minimap--row->pos i))
+                         (end (diff-minimap--row->pos (1+ i))))
+                    (when (or deleted dtype)
+                      (let ((ov (make-overlay pos end mm-buf)))
+                        (overlay-put ov 'face
+                                     (if (or deleted (eq dtype 'removed))
+                                         del-face ins-face))
                         (overlay-put ov 'priority 3)
+                        (overlay-put ov 'diff-minimap-overlay t)))
+                    ;; At low resolutions the last deleted line and the
+                    ;; first added line can share a row.  Show both colours
+                    ;; instead of letting the deletion hide the addition.
+                    (when (and deleted added (> actual-width 1))
+                      (let ((ov (make-overlay (+ pos (max 1 (/ actual-width 2)))
+                                              end mm-buf)))
+                        (overlay-put ov 'face ins-face)
+                        (overlay-put ov 'priority 4)
                         (overlay-put ov 'diff-minimap-overlay t))))))))
             ;; Recreate viewport/cursor overlays from source buffer context
             (diff-minimap--update-viewport)
@@ -1589,7 +1639,7 @@ happened."
       (with-selected-window win
         (goto-char (point-min))
         (forward-line (1- line))
-        (recenter 0)
+        (diff-minimap--focus-source-line line t)
         (diff-minimap--update-viewport))
       t)))
 
@@ -1646,8 +1696,8 @@ it until the button is released."
         (forward-line (1- line))
         (when diff-minimap-reveal-hidden-content
           (diff-minimap--reveal-hidden-line line))
-        (recenter 0)
-        (diff-minimap-show-hunk)))))
+        (diff-minimap-show-hunk)
+        (diff-minimap--focus-source-line line t)))))
 
 (defun diff-minimap--hunk-last-line (start count)
   "Return the last new-file line in a hunk starting at START with COUNT lines.
@@ -1888,6 +1938,12 @@ The buffer is modified but not saved; undo restores the reverted text."
 
 (defun diff-minimap--delete-hunk-overlay (ov)
   "Delete inline hunk overlay OV and release its saved marker."
+  (when (eq ov (car-safe diff-minimap--suspended-jump-preview))
+    (setq diff-minimap--suspended-jump-preview nil)
+    (remove-hook 'post-command-hook #'diff-minimap--maybe-restore-jump-preview t))
+  (let ((deletion (overlay-get ov 'diff-minimap-deletion-overlay)))
+    (when (overlayp deletion)
+      (delete-overlay deletion)))
   (dolist (word-ov (overlay-get ov 'diff-minimap-word-overlays))
     (when (overlayp word-ov)
       (delete-overlay word-ov)))
@@ -1981,6 +2037,7 @@ inline diff is git-only)."
                           (overlay-put word-ov 'evaporate t)
                           (push word-ov word-overlays)))))
                   (overlay-put ov 'diff-minimap-word-overlays word-overlays)))
+              (diff-minimap--anchor-hunk-deletion ov)
               ov)))))))
 
 (defun diff-minimap--hunk-overlay-at-line (line)
@@ -1989,6 +2046,121 @@ inline diff is git-only)."
                 (and (overlay-get ov 'diff-minimap-hunk)
                      (= (line-number-at-pos (overlay-start ov)) line)))
               (overlays-in (point-min) (point-max))))
+
+(defun diff-minimap--hunk-removed-text (hunk)
+  "Return the virtual removed text belonging to HUNK, if any."
+  (or (overlay-get hunk 'diff-minimap-removed-text)
+      (overlay-get hunk 'before-string)))
+
+(defun diff-minimap--anchor-hunk-deletion (hunk)
+  "Place HUNK's removed text before the preceding newline when possible.
+This keeps the preview immediately above the added lines, but lets a
+window start at the actual added line without redisplaying the entire
+deletion first.  Return the separate deletion overlay, or nil when no
+visible preceding newline exists."
+  (let* ((text (diff-minimap--hunk-removed-text hunk))
+         (start (overlay-start hunk))
+         (deletion (overlay-get hunk 'diff-minimap-deletion-overlay)))
+    (when text
+      (overlay-put hunk 'diff-minimap-removed-text text))
+    (when (and (overlayp deletion) (overlay-buffer deletion)
+               (invisible-p (overlay-start deletion)))
+      (delete-overlay deletion)
+      (overlay-put hunk 'diff-minimap-deletion-overlay nil)
+      (overlay-put hunk 'before-string text)
+      (setq deletion nil))
+    (unless (and (overlayp deletion) (overlay-buffer deletion))
+      (when (and text (overlay-get hunk 'before-string)
+                 (> start (point-min)) (eq (char-before start) ?\n)
+                 (not (invisible-p (1- start))))
+        (setq deletion (make-overlay (1- start) (1- start) nil t t))
+        ;; The source newline now terminates the last virtual line.  The
+        ;; leading newline keeps the preview below the preceding source line.
+        (overlay-put deletion 'before-string
+                     (concat "\n" (string-remove-suffix "\n" text)))
+        (overlay-put deletion 'priority 100)
+        (overlay-put deletion 'diff-minimap-deletion-preview t)
+        (overlay-put hunk 'diff-minimap-deletion-overlay deletion)
+        (overlay-put hunk 'before-string nil)))
+    (and (overlayp deletion) (overlay-buffer deletion) deletion)))
+
+(defun diff-minimap--restore-jump-preview ()
+  "Restore a preview temporarily hidden to focus its source line."
+  (let ((saved diff-minimap--suspended-jump-preview))
+    (setq diff-minimap--suspended-jump-preview nil)
+    (remove-hook 'post-command-hook #'diff-minimap--maybe-restore-jump-preview t)
+    (when (and (overlayp (car-safe saved))
+               (overlay-buffer (car saved))
+               (not (overlay-get (car saved) 'before-string)))
+      (overlay-put (car saved) 'before-string (cdr saved)))))
+
+(defun diff-minimap--suspend-jump-preview (hunk preview)
+  "Hide HUNK's PREVIEW while point remains on its source line."
+  (setq diff-minimap--suspended-jump-preview (cons hunk preview))
+  (overlay-put hunk 'before-string nil)
+  (add-hook 'post-command-hook #'diff-minimap--maybe-restore-jump-preview nil t))
+
+(defun diff-minimap--suspended-jump-line ()
+  "Return the source line whose preview is temporarily hidden, or nil."
+  (let ((hunk (car-safe diff-minimap--suspended-jump-preview)))
+    (when (and (overlayp hunk) (overlay-start hunk))
+      (line-number-at-pos (overlay-start hunk)))))
+
+(defun diff-minimap--preserve-jump-preview (line)
+  "Keep the refreshed preview on LINE hidden while point remains there."
+  (when (and line (= line (line-number-at-pos)))
+    (when-let* ((hunk (diff-minimap--hunk-overlay-at-line line))
+                (preview (diff-minimap--hunk-removed-text hunk)))
+      (unless (diff-minimap--anchor-hunk-deletion hunk)
+        (diff-minimap--suspend-jump-preview hunk preview)))))
+
+(defun diff-minimap--maybe-restore-jump-preview ()
+  "Restore a suspended preview when point leaves or scrolls above its line."
+  (let* ((hunk (car-safe diff-minimap--suspended-jump-preview))
+         (start (and (overlayp hunk) (overlay-start hunk)))
+         (source-line (and start (line-number-at-pos start)))
+         (current-line (line-number-at-pos)))
+    (when (or (not start)
+              (/= current-line source-line)
+              (memq this-command '(previous-line scroll-down-command
+                                   beginning-of-buffer)))
+      (diff-minimap--restore-jump-preview)
+      ;; The restored preview can be taller than the window.  If point moved
+      ;; below it, start at that real source line rather than the virtual text.
+      (when (and source-line (> current-line source-line))
+        (let ((window (get-buffer-window (current-buffer) 0)))
+          (when window
+            (set-window-start window (line-beginning-position))))))))
+
+(defun diff-minimap--preview-screen-lines (preview window)
+  "Estimate how many screen lines PREVIEW occupies in WINDOW."
+  (let ((width (max 1 (window-body-width window))))
+    (cl-loop for line in (split-string (string-remove-suffix "\n" preview) "\n")
+             sum (if truncate-lines
+                     1
+                   (max 1 (ceiling (string-width line) width))))))
+
+(defun diff-minimap--focus-source-line (line &optional at-top)
+  "Focus source LINE without placing point in virtual deleted text.
+When AT-TOP is non-nil, put the destination at the top of the window."
+  (diff-minimap--restore-jump-preview)
+  (let* ((window (selected-window))
+         (hunk (diff-minimap--hunk-overlay-at-line line))
+         (preview (and hunk (diff-minimap--hunk-removed-text hunk)))
+         (anchored (and preview (diff-minimap--anchor-hunk-deletion hunk))))
+    (when (and preview (not anchored))
+      ;; At buffer start, or when another fold hides the preceding newline,
+      ;; there is no earlier visible position for the virtual text.  Hide it
+      ;; while point remains there so the real destination can be displayed.
+      (diff-minimap--suspend-jump-preview hunk preview))
+    (cond
+     ((and preview
+           (or at-top
+               (>= (diff-minimap--preview-screen-lines preview window)
+                   (max 1 (/ (window-text-height window) 2)))))
+      (set-window-start window (point)))
+     (at-top (recenter 0))
+     (t (recenter)))))
 
 (defun diff-minimap--hunk-hidden-p (hunk)
   "Return non-nil when HUNK was explicitly hidden by the user.
@@ -2083,7 +2255,7 @@ context lines are added around every hunk according to
           (sort
            (mapcar
             (lambda (hunk)
-              (cons (max 1 (- (nth 1 hunk) context))
+              (cons (max 1 (min last (- (nth 1 hunk) context)))
                     (min last (+ (max (nth 1 hunk) (nth 2 hunk)) context))))
             data)
            (lambda (a b) (< (car a) (car b)))))
@@ -2106,14 +2278,21 @@ context lines are added around every hunk according to
         (let ((finish (point)))
           (when (> finish beg)
             (let* ((count (1+ (- end start)))
-                   (ov (make-overlay beg finish)))
+                   ;; Keep the boundary newline visible, so a deletion
+                   ;; preview can be anchored before the next visible line.
+                   ;; The indicator uses this newline instead of adding one.
+                   (boundary-newline (and (< finish (point-max))
+                                          (eq (char-before finish) ?\n)))
+                   (ov (make-overlay beg (if boundary-newline
+                                             (1- finish) finish))))
               (overlay-put ov 'diff-minimap-collapse t)
               (overlay-put ov 'invisible t)
               (overlay-put ov 'evaporate t)
               (overlay-put ov 'after-string
                            (propertize
-                            (format "… %d line%s hidden\n"
-                                    count (if (= count 1) "" "s"))
+                            (format "… %d line%s hidden%s"
+                                    count (if (= count 1) "" "s")
+                                    (if boundary-newline "" "\n"))
                             'face 'diff-minimap-collapsed-face))
               (push ov diff-minimap--collapse-overlays))))))))
 
@@ -2147,12 +2326,14 @@ refresh the display immediately.  When USE-BUFFER-DIFF is non-nil,
 compare HEAD with the unsaved buffer text instead of the saved file,
 so an explicit revert is reflected even if `diff-minimap-live-diff'
 is nil."
-  (let ((diff-minimap-live-diff (or use-buffer-diff diff-minimap-live-diff)))
+  (let ((diff-minimap-live-diff (or use-buffer-diff diff-minimap-live-diff))
+        (suspended-line (diff-minimap--suspended-jump-line)))
     (when (and diff-minimap--inline-active
                (bound-and-true-p diff-minimap-mode))
       (diff-minimap--remove-hunk-overlays)
       (diff-minimap--show-all-inline-hunks))
     (diff-minimap--update-collapse)
+    (diff-minimap--preserve-jump-preview suspended-line)
     (when (and (eq (current-buffer)
                    (window-buffer (selected-window)))
                (or (null diff-minimap--last-buffer)
@@ -2320,7 +2501,8 @@ even when `diff-minimap-live-diff' is nil."
 Each overlay records a marker at its hunk start, so it follows edits.
 Overlays whose hunk no longer exists in the new diff are dropped."
   (let ((markers nil)
-        (found nil))
+        (found nil)
+        (suspended-line (diff-minimap--suspended-jump-line)))
     (dolist (ov (overlays-in (point-min) (point-max)))
       (when (overlay-get ov 'diff-minimap-hunk)
         (setq found t)
@@ -2347,9 +2529,10 @@ Overlays whose hunk no longer exists in the new diff are dropped."
               (when hunk
                 (ignore-errors
                   (diff-minimap--show-hunk-overlay hunk (nth 1 hunk) full-patch)))))
-          (set-marker marker nil))))))
-  (when diff-minimap--collapsed
-    (diff-minimap--update-collapse))
+          (set-marker marker nil))))
+    (when diff-minimap--collapsed
+      (diff-minimap--update-collapse))
+    (diff-minimap--preserve-jump-preview suspended-line)))
 
 (defun diff-minimap--current-buffer-has-changes-p ()
   "Return non-nil if the current buffer has local changes.
@@ -2390,6 +2573,7 @@ leave stale inline overlays and timers behind."
       (setq diff-minimap--live-diff-timer nil))
     (diff-minimap--remove-hunk-overlays)
     (diff-minimap--remove-collapse-overlays)
+    (diff-minimap--restore-jump-preview)
     (diff-minimap--clear-hidden-hunks)
     (diff-minimap--fringe-clear)
     (setq diff-minimap--inline-active nil
@@ -2397,6 +2581,7 @@ leave stale inline overlays and timers behind."
           diff-minimap--collapse-context nil
           diff-minimap--collapsed-ranges nil
           diff-minimap--last-visible-ranges nil
+          diff-minimap--last-display-deletions nil
           diff-minimap--inline-suspended nil
           diff-minimap--sidebar-intended nil)
     (when (eq diff-minimap--last-buffer (current-buffer))
@@ -2654,13 +2839,14 @@ Both ends are revealed so the whole changed region can be inspected."
 (defun diff-minimap--pulse-range (start end)
   "Momentarily highlight lines from START to END (1-indexed, inclusive)."
   (ignore-errors
-    (save-excursion
-      (goto-char (point-min))
-      (forward-line (1- start))
-      (let ((ov (make-overlay (point)
+    (let ((ov (save-excursion
+                (goto-char (point-min))
+                (forward-line (1- start))
+                (make-overlay (point)
                               (progn (forward-line (1+ (- end start)))
-                                     (point)))))
-        (pulse-momentary-highlight-overlay ov)))))
+                                     (point))))))
+      ;; Pulse can redisplay immediately; keep point at the destination.
+      (pulse-momentary-highlight-overlay ov))))
 
 
 ;;; Search-match highlights in the minimap
@@ -2686,16 +2872,17 @@ Both ends are revealed so the whole changed region can be inspected."
         (diff-minimap--search-clear)
         (let* ((ranges (or diff-minimap--last-visible-ranges
                            (list (cons 1 (diff-minimap--buffer-lines)))))
-               (total (diff-minimap--visible-line-total ranges))
+               (deletions diff-minimap--last-display-deletions)
+               (total (diff-minimap--display-line-total ranges deletions))
                (scale (/ (float total) diff-minimap--last-nrows))
                (regexp (if isearch-regexp isearch-string
                          (regexp-quote isearch-string))))
           (save-excursion
             (goto-char (point-min))
             (while (re-search-forward regexp nil t)
-              (let* ((line (diff-minimap--line-to-visible
+              (let* ((line (diff-minimap--line-to-display
                             (line-number-at-pos (match-beginning 0))
-                            ranges))
+                            ranges deletions))
                      (row (min (1- diff-minimap--last-nrows)
                                (floor (/ (1- line) scale)))))
                 (with-current-buffer mm-buf
@@ -2734,7 +2921,7 @@ Uses the configured `diff-minimap-diff-backend' to find hunks."
                      (not (diff-minimap--hunk-hidden-p next)))
             (ignore-errors
               (diff-minimap--show-hunk-overlay next start)))
-          (recenter)
+          (diff-minimap--focus-source-line start)
           (diff-minimap--pulse-range start end))
       (user-error "No next hunk"))))
 
@@ -2766,7 +2953,7 @@ Uses the configured `diff-minimap-diff-backend' to find hunks."
                      (not (diff-minimap--hunk-hidden-p prev)))
             (ignore-errors
               (diff-minimap--show-hunk-overlay prev start)))
-          (recenter)
+          (diff-minimap--focus-source-line start)
           (diff-minimap--pulse-range start end))
       (user-error "No previous hunk"))))
 
@@ -2784,10 +2971,10 @@ Uses the configured `diff-minimap-diff-backend' to find hunks."
 
 (defun diff-minimap--after-vc-diff (&rest _)
   "After `vc-diff', jump to the hunk line matching the saved source line."
-  (when-let ((context diff-minimap--vc-diff-context)
-             (buf (car context))
-             (line (cdr context))
-             (diff-buf (get-buffer "*vc-diff*")))
+  (when-let* ((context diff-minimap--vc-diff-context)
+              (buf (car context))
+              (line (cdr context))
+              (diff-buf (get-buffer "*vc-diff*")))
     (setq diff-minimap--vc-diff-context nil)
     (with-current-buffer diff-buf
       (goto-char (point-min))
@@ -2941,6 +3128,7 @@ point to its HEAD text without saving.
       (setq diff-minimap--live-diff-timer nil))
     (diff-minimap--remove-hunk-overlays)
     (diff-minimap--remove-collapse-overlays)
+    (diff-minimap--restore-jump-preview)
     (diff-minimap--clear-hidden-hunks)
     (diff-minimap--fringe-clear)
     (setq diff-minimap--sidebar-intended nil
@@ -2949,6 +3137,7 @@ point to its HEAD text without saving.
           diff-minimap--collapse-context nil
           diff-minimap--collapsed-ranges nil
           diff-minimap--last-visible-ranges nil
+          diff-minimap--last-display-deletions nil
           diff-minimap--inline-suspended nil)
     (when (and (get-buffer-window diff-minimap--buffer-name 0)
                (or (eq diff-minimap--last-buffer (current-buffer))
