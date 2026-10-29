@@ -40,8 +40,9 @@
 ;; buffer-local: enable it separately in each file where you want the
 ;; minimap.  Opening the minimap shows every
 ;; hunk inline; removed lines are read-only virtual text, while
-;; added/changed lines stay in the buffer and can be edited in place.  The
-;; diff updates live as you type, and reverting text to HEAD removes the
+;; added/changed lines stay in the buffer and can be edited in place.
+;; Changed lines are refined at word level like `vc-diff'.  The diff
+;; updates live as you type, and reverting text to HEAD removes the
 ;; inline hunk.  Hunk navigation also unfolds hidden content (Org
 ;; subtrees, outline entries, hideshow blocks) at the destination.
 ;; `C-c r' restores the hunk at point to its HEAD text without saving.
@@ -56,10 +57,12 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'diff-mode)
 (require 'pulse)
 (require 'subr-x)
 
 (defvar diff-hl-mode)
+(defvar diff-refine-threshold)
 
 (declare-function ediff-get-diff-overlay "ediff-util" (n buf-type))
 (declare-function hs-show-block "hideshow" ())
@@ -67,6 +70,9 @@
 (declare-function org-reveal "org" (&optional siblings))
 (declare-function org-show-context "org" (&optional key))
 (declare-function outline-show-entry "outline" ())
+(declare-function smerge-refine-regions "smerge-mode"
+                  (beg1 end1 beg2 end2 props-c
+                        &optional preproc props-r props-a))
 
 (defgroup diff-minimap nil
   "VSCode-style minimap showing diff regions across the entire buffer."
@@ -170,6 +176,14 @@ ordinary editable buffer text."
   :type 'boolean
   :group 'diff-minimap)
 
+(defcustom diff-minimap-inline-word-diff t
+  "Whether inline hunks highlight word-level changes.
+When non-nil, changed line groups are refined with the same
+character-level comparison used by `diff-refine-hunk', highlighting
+only the words and characters that actually changed."
+  :type 'boolean
+  :group 'diff-minimap)
+
 (defcustom diff-minimap-reveal-hidden-content t
   "Whether hunk navigation reveals folded or invisible text.
 When non-nil, jumping to a diff hunk unfolds the destination when it
@@ -249,9 +263,10 @@ used only when they do not."
     (((class color) (min-colors 88) (background light))
      :background "#ffe7c2" :extend t)
     (t :background "#4d4218" :extend t))
-  "Fallback face for changed lines in an editable inline diff.
-Theme diff faces are preferred when they define a colour; this face is
-used only when they do not."
+  "Fallback colour for changed-line minimap rows and fringe indicators.
+Inline hunks use the added face for every inserted line, matching
+`vc-diff'.  Theme `diff-changed' is preferred when it defines a
+colour; this face is used only when it does not."
   :group 'diff-minimap)
 
 (defface diff-minimap--inline-added-face
@@ -260,16 +275,20 @@ used only when they do not."
 `diff-minimap--cache-faces' updates it to the unified palette."
   :group 'diff-minimap)
 
-(defface diff-minimap--inline-changed-face
-  '((t :inherit diff-minimap-inline-changed))
-  "Internal face for changed inline lines.
-`diff-minimap--cache-faces' updates it to the unified palette."
-  :group 'diff-minimap)
-
 (defface diff-minimap--inline-removed-face
   '((t :inherit diff-minimap-inline-removed))
   "Internal face for removed inline lines.
 `diff-minimap--cache-faces' updates it to the unified palette."
+  :group 'diff-minimap)
+
+(defface diff-minimap-inline-word-added
+  '((t :inherit diff-refine-added))
+  "Face for word-level additions inside an inline diff."
+  :group 'diff-minimap)
+
+(defface diff-minimap-inline-word-removed
+  '((t :inherit diff-refine-removed))
+  "Face for word-level removals inside an inline diff."
   :group 'diff-minimap)
 
 (defvar-local diff-minimap--last-tick nil
@@ -337,9 +356,10 @@ Only buffers with `diff-minimap-mode' enabled set this.")
 (defvar diff-minimap--norm-bg "#1a1a1a")
 (defvar diff-minimap--view-bg "#404060")
 (defvar diff-minimap--ins-bg  "#204d26")
+(defvar diff-minimap--ins-fg  "#a6e3a1")
 (defvar diff-minimap--chg-bg  "#4d4218")
 (defvar diff-minimap--del-bg  "#5a1e1e")
-(defvar diff-minimap--del-fg  "#ffb3b3")
+(defvar diff-minimap--del-fg  "#f38ba8")
 (defvar diff-minimap--cur-bg  "#00ffff")
 
 ;; Stipple bitmap patterns for the `stipple' viewport style.
@@ -396,26 +416,30 @@ Accounts for the trailing newline that Emacs adds on save."
       (max 1 n))))
 
 (defun diff-minimap--face-colour (face attribute)
-  "Return FACE's ATTRIBUTE as a colour string, or nil.
-Faces without an explicit colour for the current frame return nil."
+  "Return FACE's usable ATTRIBUTE as a colour string, or nil.
+Inherited colours count, so a face that borrows from the theme still
+matches what Emacs displays."
   (when (facep face)
     (let ((value (face-attribute face attribute nil t)))
       (and (stringp value)
            (color-name-to-rgb value)
            value))))
 
-(defun diff-minimap--first-face-colour (faces attribute fallback)
-  "Return the first ATTRIBUTE colour defined by FACES, else FALLBACK."
-  (or (cl-some (lambda (face)
-                 (diff-minimap--face-colour face attribute))
-               faces)
+(defun diff-minimap--face-has-colour-p (face)
+  "Return non-nil when FACE defines a foreground or background colour."
+  (or (diff-minimap--face-colour face :foreground)
+      (diff-minimap--face-colour face :background)))
+
+(defun diff-minimap--diff-face-background (face fallback)
+  "Return FACE's background colour, or FALLBACK when it has none."
+  (or (diff-minimap--face-colour face :background)
       fallback))
 
 (defun diff-minimap--cache-faces ()
   "Compute and cache face colours used by the minimap.
-Prefer the theme's diff colours, then fall back to the inline hunk
-faces, so the minimap, fringe indicators, and inline previews always
-share one palette."
+Prefer the same `diff-added/changed/removed' faces that `vc-diff'
+uses, then fall back to the inline hunk faces.  This keeps the
+minimap, fringe indicators, inline previews, and vc-diff aligned."
   (let* ((fbg (lambda (f attr d)
                 (if (facep f)
                     (let ((v (face-attribute f attr nil t)))
@@ -431,9 +455,12 @@ share one palette."
          (inline-del (or (diff-minimap--face-colour
                           'diff-minimap-inline-removed :background)
                          "#5a1e1e"))
-         (inline-del-fg (or (diff-minimap--face-colour
-                             'diff-minimap-inline-removed :foreground)
-                            "#ffb3b3")))
+         (ins-face (and (diff-minimap--face-has-colour-p 'diff-added)
+                        'diff-added))
+         (chg-face (and (diff-minimap--face-has-colour-p 'diff-changed)
+                        'diff-changed))
+         (del-face (and (diff-minimap--face-has-colour-p 'diff-removed)
+                        'diff-removed)))
     (setq diff-minimap--norm-bg
           (funcall fbg 'default :background
                    (let ((bg (frame-parameter nil 'background-color)))
@@ -442,29 +469,39 @@ share one palette."
                        "#1a1a1a"))))
     (setq diff-minimap--view-bg (funcall fbg 'region :background "#404060"))
     (setq diff-minimap--ins-bg
-          (diff-minimap--first-face-colour
-           '(diff-hl-insert diff-added) :background inline-ins))
+          (if ins-face
+              (diff-minimap--diff-face-background ins-face inline-ins)
+            inline-ins))
     (setq diff-minimap--chg-bg
-          (diff-minimap--first-face-colour
-           '(diff-hl-change diff-changed) :background inline-chg))
+          (if chg-face
+              (diff-minimap--diff-face-background chg-face inline-chg)
+            inline-chg))
     (setq diff-minimap--del-bg
-          (diff-minimap--first-face-colour
-           '(diff-hl-delete diff-removed) :background inline-del))
+          (if del-face
+              (diff-minimap--diff-face-background del-face inline-del)
+            inline-del))
+    (setq diff-minimap--ins-fg
+          (or (and ins-face (diff-minimap--face-colour ins-face :foreground))
+              diff-minimap--ins-bg))
     (setq diff-minimap--del-fg
-          (diff-minimap--first-face-colour
-           '(diff-hl-delete diff-removed) :foreground inline-del-fg))
+          (or (and del-face (diff-minimap--face-colour del-face :foreground))
+              (diff-minimap--face-colour 'diff-minimap-inline-removed :foreground)
+              diff-minimap--del-bg))
     (setq diff-minimap--cur-bg  (funcall fbg 'cursor :background "#00ffff"))
     (set-face-attribute 'diff-minimap--inline-added-face nil
+                        :inherit (or ins-face 'diff-minimap-inline-added)
+                        :foreground 'unspecified
                         :background diff-minimap--ins-bg)
-    (set-face-attribute 'diff-minimap--inline-changed-face nil
-                        :background diff-minimap--chg-bg)
     (set-face-attribute 'diff-minimap--inline-removed-face nil
-                        :background diff-minimap--del-bg
-                        :foreground diff-minimap--del-fg)
+                        :inherit (or del-face 'diff-minimap-inline-removed)
+                        :foreground 'unspecified
+                        :background diff-minimap--del-bg)
     (when diff-minimap-fringe-indicators
-      (set-face-foreground 'diff-minimap-fringe-added diff-minimap--ins-bg nil)
-      (set-face-foreground 'diff-minimap-fringe-changed diff-minimap--chg-bg nil)
-      (set-face-foreground 'diff-minimap-fringe-removed diff-minimap--del-bg nil))))
+      (set-face-foreground 'diff-minimap-fringe-added diff-minimap--ins-fg nil)
+      ;; Keep the distinct modified-line bitmap shape, but use the added
+      ;; colour so fringe, sidebar, inline hunk, and vc-diff agree.
+      (set-face-foreground 'diff-minimap-fringe-changed diff-minimap--ins-fg nil)
+      (set-face-foreground 'diff-minimap-fringe-removed diff-minimap--del-fg nil))))
 
 
 ;;; Diff data backends
@@ -1191,8 +1228,10 @@ registered with `get-buffer-window'."
                           (overlay-put ov 'priority 3)
                           (overlay-put ov 'diff-minimap-overlay t))))
                   (let* ((dtype (aref row-diff i))
-                         (face (cond ((eq dtype 'added) ins-face)
-                                     ((eq dtype 'changed) chg-face)
+                         ;; `vc-diff' shows replacement lines with the added
+                         ;; face, so modified rows use the same colour as
+                         ;; pure additions in the sidebar.
+                         (face (cond ((memq dtype '(added changed)) ins-face)
                                      ((eq dtype 'removed) del-face))))
                     (when face
                       (let ((ov (make-overlay (diff-minimap--row->pos i)
@@ -1507,14 +1546,16 @@ missing final newline."
             (string-join (cons header diff-lines) "\n")))))))
 
 (defun diff-minimap--parse-inline-hunk (narrowed)
-  "Return (OLD-LINES NEW-START NEW-COUNT OLD-NO-NEWLINE) parsed from NARROWED.
+  "Return (OLD-LINES NEW-START NEW-COUNT OLD-NO-NEWLINE NEW-LINES).
 NARROWED is a unified diff sub-hunk as returned by
 `diff-minimap--extract-sub-hunk' — a header followed only by
 removed and added lines.  OLD-NO-NEWLINE is non-nil when the removed
 text ended without a final newline (a no-newline marker follows a
-removed line)."
+removed line).  NEW-LINES contains the added lines without their `+'
+prefix."
   (let ((lines (split-string narrowed "\n" t))
         (old-lines nil)
+        (new-lines nil)
         (new-start 1)
         (new-count 1)
         (last-prefix nil)
@@ -1537,13 +1578,77 @@ removed line)."
            (t
             (setq last-prefix prefix)
             (when (eq prefix ?-)
-              (push (substring line 1) old-lines)))))))
-    (list (nreverse old-lines) new-start new-count old-no-newline)))
+              (push (substring line 1) old-lines))
+            (when (eq prefix ?+)
+              (push (substring line 1) new-lines)))))))
+    (list (nreverse old-lines) new-start new-count old-no-newline
+          (nreverse new-lines))))
+
+(defun diff-minimap--refine-inline-lines (old-lines new-lines)
+  "Return word-level refinements for OLD-LINES and NEW-LINES.
+The value is (OLD-TEXT . NEW-RANGES), where OLD-TEXT is the removed
+text with `diff-minimap-inline-word-removed' applied to changed
+characters and NEW-RANGES lists (START . END) character offsets into
+the concatenated new lines.  Return nil when refinement is disabled,
+unnecessary, too large, or unavailable."
+  (when (and diff-minimap-inline-word-diff
+             old-lines
+             new-lines
+             (not (equal old-lines new-lines)))
+    (require 'smerge-mode)
+    (let* ((old-text (mapconcat #'identity old-lines "\n"))
+           (new-text (mapconcat #'identity new-lines "\n"))
+           (total (+ (length old-text) (length new-text))))
+      (when (or (null diff-refine-threshold)
+                (<= total diff-refine-threshold))
+        (let ((old-buffer (generate-new-buffer " *diff-minimap-refine-old*"))
+              (new-buffer (generate-new-buffer " *diff-minimap-refine-new*"))
+              (result nil))
+          (unwind-protect
+              (progn
+                (with-current-buffer old-buffer (insert old-text))
+                (with-current-buffer new-buffer (insert new-text))
+                (let ((old-start (with-current-buffer old-buffer
+                                   (copy-marker (point-min))))
+                      (old-end (with-current-buffer old-buffer
+                                 (copy-marker (point-max))))
+                      (new-start (with-current-buffer new-buffer
+                                   (copy-marker (point-min))))
+                      (new-end (with-current-buffer new-buffer
+                                 (copy-marker (point-max)))))
+                  (when (ignore-errors
+                          (with-current-buffer old-buffer
+                            (smerge-refine-regions
+                             old-start old-end new-start new-end nil nil
+                             '((face . diff-minimap-inline-word-removed))
+                             '((face . diff-minimap-inline-word-added))))
+                          t)
+                    (let ((old-refined
+                           (with-current-buffer old-buffer
+                             (buffer-substring (point-min) (point-max))))
+                          (new-ranges nil))
+                      (with-current-buffer old-buffer
+                        (dolist (ov (overlays-in (point-min) (point-max)))
+                          (when-let* ((face (overlay-get ov 'face)))
+                            (add-face-text-property
+                             (- (overlay-start ov) (point-min))
+                             (- (overlay-end ov) (point-min))
+                             face nil old-refined))))
+                      (with-current-buffer new-buffer
+                        (dolist (ov (overlays-in (point-min) (point-max)))
+                          (when (overlay-get ov 'face)
+                            (push (cons (- (overlay-start ov) (point-min))
+                                        (- (overlay-end ov) (point-min)))
+                                  new-ranges))))
+                      (setq result (cons old-refined
+                                         (nreverse new-ranges)))))))
+            (when (buffer-live-p old-buffer) (kill-buffer old-buffer))
+            (when (buffer-live-p new-buffer) (kill-buffer new-buffer)))
+          result)))))
 
 (defun diff-minimap--change-region-at-line (line &optional full-patch)
   "Return the diff change region at LINE in the current buffer.
-The value has the form (OLD-LINES NEW-START NEW-COUNT
-OLD-NO-NEWLINE) as returned by `diff-minimap--parse-inline-hunk',
+The value has the form returned by `diff-minimap--parse-inline-hunk',
 or nil when LINE is not part of a diff change.  FULL-PATCH, when
 non-nil, is a unified diff to use instead of running git again."
   (when-let* ((file (buffer-file-name))
@@ -1554,9 +1659,8 @@ non-nil, is a unified diff to use instead of running git again."
 
 (defun diff-minimap--revert-change-region (region)
   "Restore the original text of the diff change described by REGION.
-REGION is (OLD-LINES NEW-START NEW-COUNT OLD-NO-NEWLINE) as returned
-by `diff-minimap--change-region-at-line'.  The buffer is modified but
-not saved; undo restores the reverted text."
+REGION is a value returned by `diff-minimap--change-region-at-line'.
+The buffer is modified but not saved; undo restores the reverted text."
   (let* ((old-lines (nth 0 region))
          (new-start (nth 1 region))
          (new-count (nth 2 region))
@@ -1587,6 +1691,9 @@ not saved; undo restores the reverted text."
 
 (defun diff-minimap--delete-hunk-overlay (ov)
   "Delete inline hunk overlay OV and release its saved marker."
+  (dolist (word-ov (overlay-get ov 'diff-minimap-word-overlays))
+    (when (overlayp word-ov)
+      (delete-overlay word-ov)))
   (when-let* ((marker (overlay-get ov 'diff-minimap-hunk-marker)))
     (when (markerp marker)
       (set-marker marker nil)))
@@ -1602,11 +1709,13 @@ not saved; undo restores the reverted text."
   "Create an editable inline overlay for HUNK at TARGET-LINE.
 HUNK is a list (TYPE START END).  Removed lines are rendered as
 read-only virtual text above the hunk; the added/changed lines stay
-in the buffer as ordinary editable text and are highlighted.
-FULL-PATCH, when non-nil, is a precomputed unified diff to use instead
-of running git again.  Return the overlay, or nil when no patch could
-be produced — e.g. the buffer visits no file, or git produced no diff
-for the hunk (the inline diff is git-only)."
+in the buffer as ordinary editable text and are highlighted.  Changed
+line groups are refined at word level when
+`diff-minimap-inline-word-diff' is non-nil.  FULL-PATCH, when non-nil,
+is a precomputed unified diff to use instead of running git again.
+Return the overlay, or nil when no patch could be produced — e.g. the
+buffer visits no file, or git produced no diff for the hunk (the
+inline diff is git-only)."
   (when-let* ((file (buffer-file-name))
               (start (nth 1 hunk)))
     (let* ((full-patch (or full-patch (diff-minimap--current-patch file)))
@@ -1620,6 +1729,14 @@ for the hunk (the inline diff is git-only)."
                (old-lines (nth 0 parsed))
                (new-start (nth 1 parsed))
                (new-count (nth 2 parsed))
+               (new-lines (nth 4 parsed))
+               (refinements (diff-minimap--refine-inline-lines
+                             old-lines new-lines))
+               (old-display (if refinements
+                                (car refinements)
+                              (and old-lines
+                                   (mapconcat #'identity old-lines "\n"))))
+               (new-ranges (cdr refinements))
                (start-line (max 1 (if (zerop new-count)
                                       (1+ new-start)
                                     new-start))))
@@ -1641,14 +1758,32 @@ for the hunk (the inline diff is git-only)."
                 (overlay-put ov 'before-string
                              (mapconcat
                               (lambda (line)
-                                (propertize (concat "-" line "\n")
-                                            'face 'diff-minimap--inline-removed-face))
-                              old-lines "")))
+                                (let ((text (concat "-" line "\n")))
+                                  (add-face-text-property
+                                   0 (length text)
+                                   'diff-minimap--inline-removed-face t text)
+                                  text))
+                              (split-string old-display "\n")
+                              "")))
               (when (> new-count 0)
-                (overlay-put ov 'face (if old-lines
-                                          'diff-minimap--inline-changed-face
-                                        'diff-minimap--inline-added-face)))
+                ;; `vc-diff' uses `diff-added' for every "+" line, including
+                ;; replacement lines in a modified hunk.
+                (overlay-put ov 'face 'diff-minimap--inline-added-face))
               (overlay-put ov 'priority 100)
+              (when new-ranges
+                (let (word-overlays)
+                  (dolist (range new-ranges)
+                    (let ((beg (+ ov-start (car range)))
+                          (end (min ov-end (+ ov-start (cdr range)))))
+                      (when (< beg end)
+                        (let ((word-ov (make-overlay beg end)))
+                          (overlay-put word-ov 'diff-minimap-inline-word t)
+                          (overlay-put word-ov 'face
+                                       'diff-minimap-inline-word-added)
+                          (overlay-put word-ov 'priority 110)
+                          (overlay-put word-ov 'evaporate t)
+                          (push word-ov word-overlays)))))
+                  (overlay-put ov 'diff-minimap-word-overlays word-overlays)))
               ov)))))))
 
 (defun diff-minimap--hunk-overlay-at-line (line)
@@ -1884,8 +2019,10 @@ Overlays whose hunk no longer exists in the new diff are dropped."
         (setq found t)
         (let ((marker (overlay-get ov 'diff-minimap-hunk-marker)))
           (when (markerp marker)
-            (push marker markers)))
-        (delete-overlay ov)))
+            ;; `diff-minimap--delete-hunk-overlay' releases the overlay's
+            ;; marker, so keep an independent marker for rebuilding.
+            (push (copy-marker (marker-position marker)) markers)))
+        (diff-minimap--delete-hunk-overlay ov)))
     (when found
       (diff-minimap--cache-faces)
       (let* ((data (diff-minimap--collect-diff-data))

@@ -12,12 +12,13 @@ This document contains the release notes for diff-minimap.
 
 ** 0.12.1 — <2026-10-29>
 
-Respect hides, reveal destinations, and unify diff colours.
+Hunk visibility, vc-diff-aligned colours, and word-level inline diffs.
 
 - Hunk navigation (=M-n= / =M-p=, =C-x v ]= / =C-x v [=) no longer re-expands a hunk that was turned off with =C-c e=, or any hunk when all were turned off with =C-c E=.  The hide is remembered per hunk with markers, so it survives edits, live-diff refreshes, and navigation.
 - =C-c e= still shows a hidden hunk again, and =C-c E= clears every explicit hide and shows all hunks.  Hidden-hunk state is cleared when the mode is disabled, the major mode changes, or the buffer no longer has changes.
 - Hunk navigation and minimap right-clicks now reveal hidden content at the destination.  A hunk inside a folded Org subtree, outline entry, hideshow block, or other invisible overlay is automatically unfolded, revealing both ends of the hunk.  Add =diff-minimap-reveal-hidden-content= (default =t=) to disable this.
-- Unify the diff palette.  Minimap rows, source-buffer fringe indicators, and inline previews now resolve to the same cached colours.  Theme colours from =diff-hl-insert/change/delete= or =diff-added/changed/removed= are used first; when a theme leaves them unspecified, the explicit light/dark =diff-minimap-inline-added/changed/removed= faces are the fallback.  Customising an inline face changes the fallback for all three views.  Remove =diff-minimap-colour-source=, which is no longer needed.
+- Align the diff palette with =vc-diff=.  Inline previews now use =diff-added= for every inserted (=+=) line, including replacement lines in modified hunks, and =diff-removed= for removed (=-=) lines, matching =vc-diff=.  Inline blocks and minimap rows use those faces' background colours; modified rows use the added background just like the inline hunk.  Fringe indicators use the matching foreground colour so they stay visible.  When a diff face has no usable background, the explicit light/dark =diff-minimap-inline-added/changed/removed= fallback faces supply the block colour.  Remove =diff-minimap-colour-source=, which is no longer needed.
+- Refine inline hunks at word and character level, matching =vc-diff= / =diff-mode=.  Changed line groups use =smerge-refine-regions= and the new =diff-minimap-inline-word-added/removed= faces, so only the words that actually changed get the stronger highlight.  Add =diff-minimap-inline-word-diff= (default =t=) to disable refinement and fall back to whole-line highlighting.
 
 ** 0.12.0 — <2026-10-26>
 

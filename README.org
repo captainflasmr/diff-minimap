@@ -75,9 +75,11 @@ When =diff-minimap-mode= is active and =diff-minimap-inline-preview= is non-nil 
 
 ** Inline diff editing
 
-~diff-minimap-show-hunk= (=C-c e=) shows the change at point as an editable inline diff.  Removed lines are rendered as read-only virtual text with the =diff-minimap-inline-removed= face; the added/changed lines are the real buffer text, highlighted with =diff-minimap-inline-added= / =diff-minimap-inline-changed=, and can be edited normally.  The minimap, fringe indicators, and inline previews all resolve to the same diff palette.  When the active theme defines diff colours through =diff-hl= or the built-in =diff-*= faces, those colours are used first.  When a theme leaves them unspecified, the inline faces provide an explicit light/dark red, green, and amber fallback so the views still match and remain readable.
+~diff-minimap-show-hunk= (=C-c e=) shows the change at point as an editable inline diff.  Removed lines are rendered as read-only virtual text with the =diff-minimap-inline-removed= face; inserted lines, including replacement lines in a modified hunk, are the real buffer text highlighted with =diff-minimap-inline-added=, and can be edited normally.  The inline previews inherit the same =diff-added= and =diff-removed= faces that =vc-diff= applies to =+= and =-= lines, including their foreground and background colours, so the original buffer and a side-by-side =vc-diff= buffer match.  When a theme leaves those faces unspecified, the inline faces provide an explicit light/dark red, green, and amber fallback.
 
 Only the specific change group (the contiguous =-= /=+= block) containing point is shown per hunk, without surrounding context or unrelated changes from the same git hunk.  All hunks are shown when the minimap opens; =C-c e= toggles the hunk at point without clearing the others, and =C-c E= shows or hides every hunk in the buffer at once.  Toggling a hunk off records the decision: later hunk navigation leaves that hunk collapsed instead of re-expanding it.  Show it again with =C-c e=, or use =C-c E= to show everything.
+
+Changed line groups are also refined at word and character level, using the same comparison as =diff-refine-hunk= in =vc-diff= / =diff-mode=.  Only the words that actually changed get the stronger =diff-minimap-inline-word-added= / =diff-minimap-inline-word-removed= highlight, while the rest of the line keeps the normal inline background.  Set =diff-minimap-inline-word-diff= to =nil= to use whole-line highlighting only.
 
 Inline hunks follow the text with markers.  When =diff-minimap-live-diff= is non-nil (the default), editing recomputes the diff from the unsaved buffer text after =diff-minimap-live-diff-delay= seconds of idle time, so the minimap and inline hunks update as you type.  Reverting the text to its =HEAD= state removes the inline hunks without saving.  Set =diff-minimap-live-diff= to =nil= to update only on save and navigation.
 
@@ -130,6 +132,7 @@ Set it in your config:
 | =diff-minimap-search-highlights= | t            | Show isearch matches as yellow bars in the minimap           |
 | =diff-minimap-wheel-scroll-lines= | 3           | Source lines scrolled per wheel notch over the minimap       |
 | =diff-minimap-inline-preview=    | t           | Show editable inline diffs on open and navigation            |
+| =diff-minimap-inline-word-diff=  | t           | Highlight word-level changes inside inline hunks             |
 | =diff-minimap-reveal-hidden-content= | t        | Unfold hidden content at the destination hunk                |
 | =diff-minimap-live-diff=         | t           | Recompute the diff from unsaved buffer text while typing     |
 | =diff-minimap-live-diff-delay=   | 0.2         | Idle seconds before a live diff refresh                      |
@@ -157,15 +160,16 @@ To use a custom stipple, set =diff-minimap-stipple-pattern= to a list of the for
 
 ** Unified diff colours
 
-The minimap rows, source-buffer fringe indicators, and inline previews all resolve to one cached palette.  Each added/changed/removed colour is chosen in this order:
+The minimap rows, source-buffer fringe indicators, and inline previews all align with the faces =vc-diff= uses:
 
-1. The theme's =diff-hl-insert/change/delete= colour when defined, then the built-in =diff-added/changed/removed= colour.
-2. The corresponding inline fallback face:
+1. Inline inserted (=+=) lines use =diff-added= and removed (=-=) lines use =diff-removed=, exactly as =vc-diff= does.  Their block backgrounds come from those faces' =:background= colours, while their text inherits the faces' foreground styling.
+2. Minimap added and modified rows use the =diff-added= background; removed rows use the =diff-removed= background.  Modified rows are shown as insertions because =vc-diff= renders replacement lines with the added face.
+3. If a diff face has no usable background, the corresponding inline fallback face supplies the block colour:
    - =diff-minimap-inline-added=
    - =diff-minimap-inline-changed=
    - =diff-minimap-inline-removed=
 
-The inline faces carry explicit light/dark red, green, and amber palettes, so themes that leave the diff faces unspecified still get a consistent, readable colour scheme.  Customising an inline face changes the fallback used by all three views.
+Fringe indicators use the diff face's foreground colour when available, so they stay visible against the block background.  The inline fallback faces carry explicit light/dark red, green, and amber palettes, so themes that leave the diff faces unspecified still get a consistent, readable colour scheme.  Customising an inline face changes the fallback used by the corresponding view.
 
 Other derived colours (=norm-bg=, =view-bg=, =cur-bg=) still come from =default=, =region=, and =cursor= respectively.
 
