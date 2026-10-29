@@ -101,9 +101,12 @@ editable inline diff.  Removed lines are rendered as read-only virtual
 text with the =diff-minimap-inline-removed= face; the added/changed
 lines are the real buffer text, highlighted with
 =diff-minimap-inline-added= / =diff-minimap-inline-changed=, and can be
-edited normally.  The inline faces carry explicit light/dark red, green,
-and amber backgrounds rather than inheriting the built-in =diff-*=
-faces, which some themes leave unspecified.
+edited normally.  The minimap, fringe indicators, and inline previews
+all resolve to the same diff palette.  When the active theme defines
+diff colours through =diff-hl= or the built-in =diff-*= faces, those
+colours are used first.  When a theme leaves them unspecified, the
+inline faces provide an explicit light/dark red, green, and amber
+fallback so the views still match and remain readable.
 
 Only the specific change group (the contiguous =-= /=+= block) containing
 point is shown per hunk, without surrounding context or unrelated changes
@@ -194,7 +197,6 @@ Set it in your config:
 | =diff-minimap-fringe-indicators= | t            | Show coloured fringe bitmaps on changed lines                |
 | =diff-minimap-fringe-side=       | 'left        | Which fringe (=left= or =right=)                             |
 | =diff-minimap-search-highlights= | t            | Show isearch matches as yellow bars in the minimap           |
-| =diff-minimap-colour-source=     | 'diff-hl     | Prefer =diff-hl= fringe faces or built-in =diff= faces       |
 | =diff-minimap-wheel-scroll-lines= | 3           | Source lines scrolled per wheel notch over the minimap       |
 | =diff-minimap-inline-preview=    | t           | Show editable inline diffs on open and navigation            |
 | =diff-minimap-reveal-hidden-content= | t        | Unfold hidden content at the destination hunk                |
@@ -222,16 +224,26 @@ To use a custom stipple, set =diff-minimap-stipple-pattern= to a list of the for
       '(8 8 . ,(apply #'string '(#x80 #x40 #x20 #x10 #x08 #x04 #x02 #x01))))
 #+end_src
 
-** Colour source
+** Unified diff colours
 
-The =diff-minimap-colour-source= option controls which Emacs faces are queried for the diff highlight colours:
+The minimap rows, source-buffer fringe indicators, and inline previews
+all resolve to one cached palette.  Each added/changed/removed colour
+is chosen in this order:
 
-- =diff-hl= (default) queries =diff-hl-insert=, =diff-hl-change=, =diff-hl-delete= first, falling back to =diff-added=, =diff-changed=, =diff-removed=.
-- =diff= reverses the priority: built-in diff faces first, diff-hl faces as fallback.
+1. The theme's =diff-hl-insert/change/delete= colour when defined,
+   then the built-in =diff-added/changed/removed= colour.
+2. The corresponding inline fallback face:
+   - =diff-minimap-inline-added=
+   - =diff-minimap-inline-changed=
+   - =diff-minimap-inline-removed=
 
-Both paths end with the same hardcoded hex fallbacks (=#006600=, =#666600=, =#660000=) so the minimap always has colour regardless of theme.
+The inline faces carry explicit light/dark red, green, and amber
+palettes, so themes that leave the diff faces unspecified still get a
+consistent, readable colour scheme.  Customising an inline face
+changes the fallback used by all three views.
 
-Other derived colours (=norm-bg=, =view-bg=, =cur-bg=) always come from =fringe=, =region=, and =cursor= respectively.
+Other derived colours (=norm-bg=, =view-bg=, =cur-bg=) still come from
+=default=, =region=, and =cursor= respectively.
 
 ** Diff backends
 
@@ -278,7 +290,7 @@ The minimap buffer is written once by =diff-minimap--render=, which:
 1. Collects diff data from the configured backend (=diff-hl= overlays or =git diff=).
 2. Maps source lines to minimap rows via a scale factor: =total-source-lines / minimap-rows=.
 3. Paints each minimap row with an =:extend t= background face (normal background from =fringe=).
-4. Applies diff colours as overlays (priority 3) on rows the backend reports as changed — inserted (green), changed (yellow), removed (red).
+4. Applies the unified diff colours as overlays (priority 3) on rows the backend reports as changed — added (green), changed (amber), removed (red).
 5. Paints fringe bitmaps in the source buffer on every changed line (when =diff-minimap-fringe-indicators= is non-nil).
 6. Stores =source-line= and =source-buf= text properties on each row for click-to-jump.
 
@@ -292,7 +304,7 @@ A full re-render (=diff-minimap--render=) is triggered only when:
 - The source window is resized (=diff-minimap--last-nrows= changes).
 - The active theme changes (=custom-enabled-themes= changes).
 
-Face colours are cached in =defvar=s so the nine =face-attribute= calls run once per full render rather than once per minimap row.
+Face colours are cached in =defvar=s so the =face-attribute= calls run once per full render rather than once per minimap row.
 
 * Dependencies
 

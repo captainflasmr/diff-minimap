@@ -154,15 +154,6 @@ Disabled when nil."
                  (const :tag "Right" right))
   :group 'diff-minimap)
 
-(defcustom diff-minimap-colour-source 'diff-hl
-  "Which face colours to use for diff highlights in the minimap.
-`diff-hl' — prefer =diff-hl-insert/change/deleted= fringe faces (fallback
-            to built-in diff faces, then hardcoded defaults).
-`diff'    — prefer built-in =diff-added/changed/removed= faces."
-  :type '(choice (const :tag "diff-hl fringe colours" diff-hl)
-                  (const :tag "Built-in diff colours" diff))
-  :group 'diff-minimap)
-
 (defcustom diff-minimap-wheel-scroll-lines 3
   "Number of source-buffer lines to scroll per wheel notch in the minimap."
   :type 'integer
@@ -208,18 +199,21 @@ text to its original state removes the inline hunks without saving."
   :group 'diff-minimap)
 
 (defface diff-minimap-fringe-added
-  '((t :foreground "#006600"))
-  "Face for added-line fringe indicator."
+  '((t :foreground "#204d26"))
+  "Face for added-line fringe indicator.
+The foreground follows `diff-minimap-inline-added'."
   :group 'diff-minimap)
 
 (defface diff-minimap-fringe-changed
-  '((t :foreground "#666600"))
-  "Face for changed-line fringe indicator."
+  '((t :foreground "#4d4218"))
+  "Face for changed-line fringe indicator.
+The foreground follows `diff-minimap-inline-changed'."
   :group 'diff-minimap)
 
 (defface diff-minimap-fringe-removed
-  '((t :foreground "#660000"))
-  "Face for removed-line fringe indicator."
+  '((t :foreground "#5a1e1e"))
+  "Face for removed-line fringe indicator.
+The foreground follows `diff-minimap-inline-removed'."
   :group 'diff-minimap)
 
 (defface diff-minimap-search-face
@@ -233,7 +227,9 @@ text to its original state removes the inline hunks without saving."
     (((class color) (min-colors 88) (background light))
      :background "#ffd7d5" :foreground "#82071e" :extend t)
     (t :background "#5a1e1e" :extend t))
-  "Face for removed lines shown as read-only virtual text inline."
+  "Fallback face for removed lines shown as read-only virtual text inline.
+Theme diff faces are preferred when they define a colour; this face is
+used only when they do not."
   :group 'diff-minimap)
 
 (defface diff-minimap-inline-added
@@ -242,7 +238,9 @@ text to its original state removes the inline hunks without saving."
     (((class color) (min-colors 88) (background light))
      :background "#ccffd8" :extend t)
     (t :background "#204d26" :extend t))
-  "Face for added lines in an editable inline diff."
+  "Fallback face for added lines in an editable inline diff.
+Theme diff faces are preferred when they define a colour; this face is
+used only when they do not."
   :group 'diff-minimap)
 
 (defface diff-minimap-inline-changed
@@ -251,7 +249,27 @@ text to its original state removes the inline hunks without saving."
     (((class color) (min-colors 88) (background light))
      :background "#ffe7c2" :extend t)
     (t :background "#4d4218" :extend t))
-  "Face for changed lines in an editable inline diff."
+  "Fallback face for changed lines in an editable inline diff.
+Theme diff faces are preferred when they define a colour; this face is
+used only when they do not."
+  :group 'diff-minimap)
+
+(defface diff-minimap--inline-added-face
+  '((t :inherit diff-minimap-inline-added))
+  "Internal face for added inline lines.
+`diff-minimap--cache-faces' updates it to the unified palette."
+  :group 'diff-minimap)
+
+(defface diff-minimap--inline-changed-face
+  '((t :inherit diff-minimap-inline-changed))
+  "Internal face for changed inline lines.
+`diff-minimap--cache-faces' updates it to the unified palette."
+  :group 'diff-minimap)
+
+(defface diff-minimap--inline-removed-face
+  '((t :inherit diff-minimap-inline-removed))
+  "Internal face for removed inline lines.
+`diff-minimap--cache-faces' updates it to the unified palette."
   :group 'diff-minimap)
 
 (defvar-local diff-minimap--last-tick nil
@@ -315,11 +333,13 @@ Only buffers with `diff-minimap-mode' enabled set this.")
   "Whether the current Ediff session was visible at the last command.")
 
 ;; Cached face colours — recomputed in `diff-minimap--cache-faces'.
+;; Theme diff colours win; the inline faces are the fallback palette.
 (defvar diff-minimap--norm-bg "#1a1a1a")
 (defvar diff-minimap--view-bg "#404060")
-(defvar diff-minimap--ins-bg  "#2ea043")
-(defvar diff-minimap--chg-bg  "#d29922")
-(defvar diff-minimap--del-bg  "#da3633")
+(defvar diff-minimap--ins-bg  "#204d26")
+(defvar diff-minimap--chg-bg  "#4d4218")
+(defvar diff-minimap--del-bg  "#5a1e1e")
+(defvar diff-minimap--del-fg  "#ffb3b3")
 (defvar diff-minimap--cur-bg  "#00ffff")
 
 ;; Stipple bitmap patterns for the `stipple' viewport style.
@@ -375,15 +395,45 @@ Accounts for the trailing newline that Emacs adds on save."
         (max 1 (1- n))
       (max 1 n))))
 
+(defun diff-minimap--face-colour (face attribute)
+  "Return FACE's ATTRIBUTE as a colour string, or nil.
+Faces without an explicit colour for the current frame return nil."
+  (when (facep face)
+    (let ((value (face-attribute face attribute nil t)))
+      (and (stringp value)
+           (color-name-to-rgb value)
+           value))))
+
+(defun diff-minimap--first-face-colour (faces attribute fallback)
+  "Return the first ATTRIBUTE colour defined by FACES, else FALLBACK."
+  (or (cl-some (lambda (face)
+                 (diff-minimap--face-colour face attribute))
+               faces)
+      fallback))
+
 (defun diff-minimap--cache-faces ()
   "Compute and cache face colours used by the minimap.
-Respects `diff-minimap-colour-source' for diff highlight priority."
-  (let ((fbg (lambda (f attr d)
-               (if (facep f)
-                   (let ((v (face-attribute f attr nil t)))
-                     (if (and (stringp v) (color-name-to-rgb v))
-                         v d))
-                 d))))
+Prefer the theme's diff colours, then fall back to the inline hunk
+faces, so the minimap, fringe indicators, and inline previews always
+share one palette."
+  (let* ((fbg (lambda (f attr d)
+                (if (facep f)
+                    (let ((v (face-attribute f attr nil t)))
+                      (if (and (stringp v) (color-name-to-rgb v))
+                          v d))
+                  d)))
+         (inline-ins (or (diff-minimap--face-colour
+                          'diff-minimap-inline-added :background)
+                         "#204d26"))
+         (inline-chg (or (diff-minimap--face-colour
+                          'diff-minimap-inline-changed :background)
+                         "#4d4218"))
+         (inline-del (or (diff-minimap--face-colour
+                          'diff-minimap-inline-removed :background)
+                         "#5a1e1e"))
+         (inline-del-fg (or (diff-minimap--face-colour
+                             'diff-minimap-inline-removed :foreground)
+                            "#ffb3b3")))
     (setq diff-minimap--norm-bg
           (funcall fbg 'default :background
                    (let ((bg (frame-parameter nil 'background-color)))
@@ -391,21 +441,26 @@ Respects `diff-minimap-colour-source' for diff highlight priority."
                          bg
                        "#1a1a1a"))))
     (setq diff-minimap--view-bg (funcall fbg 'region :background "#404060"))
-    (if (eq diff-minimap-colour-source 'diff-hl)
-        (progn
-          (setq diff-minimap--ins-bg (funcall fbg 'diff-hl-insert :background
-                                              (funcall fbg 'diff-added :background "#2ea043")))
-          (setq diff-minimap--chg-bg (funcall fbg 'diff-hl-change :background
-                                              (funcall fbg 'diff-changed :background "#d29922")))
-          (setq diff-minimap--del-bg (funcall fbg 'diff-hl-delete :background
-                                              (funcall fbg 'diff-removed :background "#da3633"))))
-      (setq diff-minimap--ins-bg  (funcall fbg 'diff-added :background
-                                           (funcall fbg 'diff-hl-insert :background "#2ea043")))
-      (setq diff-minimap--chg-bg  (funcall fbg 'diff-changed :background
-                                           (funcall fbg 'diff-hl-change :background "#d29922")))
-      (setq diff-minimap--del-bg  (funcall fbg 'diff-removed :background
-                                           (funcall fbg 'diff-hl-delete :background "#da3633"))))
+    (setq diff-minimap--ins-bg
+          (diff-minimap--first-face-colour
+           '(diff-hl-insert diff-added) :background inline-ins))
+    (setq diff-minimap--chg-bg
+          (diff-minimap--first-face-colour
+           '(diff-hl-change diff-changed) :background inline-chg))
+    (setq diff-minimap--del-bg
+          (diff-minimap--first-face-colour
+           '(diff-hl-delete diff-removed) :background inline-del))
+    (setq diff-minimap--del-fg
+          (diff-minimap--first-face-colour
+           '(diff-hl-delete diff-removed) :foreground inline-del-fg))
     (setq diff-minimap--cur-bg  (funcall fbg 'cursor :background "#00ffff"))
+    (set-face-attribute 'diff-minimap--inline-added-face nil
+                        :background diff-minimap--ins-bg)
+    (set-face-attribute 'diff-minimap--inline-changed-face nil
+                        :background diff-minimap--chg-bg)
+    (set-face-attribute 'diff-minimap--inline-removed-face nil
+                        :background diff-minimap--del-bg
+                        :foreground diff-minimap--del-fg)
     (when diff-minimap-fringe-indicators
       (set-face-foreground 'diff-minimap-fringe-added diff-minimap--ins-bg nil)
       (set-face-foreground 'diff-minimap-fringe-changed diff-minimap--chg-bg nil)
@@ -1587,12 +1642,12 @@ for the hunk (the inline diff is git-only)."
                              (mapconcat
                               (lambda (line)
                                 (propertize (concat "-" line "\n")
-                                            'face 'diff-minimap-inline-removed))
+                                            'face 'diff-minimap--inline-removed-face))
                               old-lines "")))
               (when (> new-count 0)
                 (overlay-put ov 'face (if old-lines
-                                          'diff-minimap-inline-changed
-                                        'diff-minimap-inline-added)))
+                                          'diff-minimap--inline-changed-face
+                                        'diff-minimap--inline-added-face)))
               (overlay-put ov 'priority 100)
               ov)))))))
 
@@ -1664,6 +1719,7 @@ HUNK is a list (TYPE START-LINE END-LINE)."
   "Ensure every diff hunk in the current buffer has an inline overlay.
 Hunks the user explicitly hid are left hidden.  Existing inline hunks
 are left alone; missing ones are added."
+  (diff-minimap--cache-faces)
   (setq diff-minimap--inline-active t)
   (let* ((data (diff-minimap--collect-diff-data))
          (full-patch (and data
@@ -1769,6 +1825,7 @@ during navigation until it is shown again.  Other inline hunks are
 left alone; use `diff-minimap-show-all-hunks' to toggle every hunk."
   (interactive)
   (diff-minimap--ensure-mode)
+  (diff-minimap--cache-faces)
   (let* ((line (line-number-at-pos))
          ;; Find ANY hunk overlay at point (including batch-created ones)
          (hunk-ov (cl-find-if (lambda (ov) (overlay-get ov 'diff-minimap-hunk))
@@ -1830,6 +1887,7 @@ Overlays whose hunk no longer exists in the new diff are dropped."
             (push marker markers)))
         (delete-overlay ov)))
     (when found
+      (diff-minimap--cache-faces)
       (let* ((data (diff-minimap--collect-diff-data))
              (full-patch (and data
                               (buffer-file-name)
