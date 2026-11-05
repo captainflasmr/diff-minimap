@@ -70,10 +70,13 @@ When =diff-minimap-reveal-hidden-content= is non-nil (the default), a jump also 
 | =C-c e=    | =diff-minimap-show-hunk=         |
 | =C-c E=    | =diff-minimap-show-all-hunks=    |
 | =C-c r=    | =diff-minimap-revert-hunk=       |
+| =C-c d=    | =diff-minimap-dispatch=         |
 
 The =M-n=, =M-p=, =M-F5=, =M-S-F5=, =C-x v ]=, and =C-x v [= bindings are in =diff-minimap-mode-map=, so they apply only in file buffers where the mode is enabled.  The minibuffer keeps its history bindings, non-file buffers keep their normal bindings, and =C-x o= remains the way to switch windows while the minimap is active.
 
 The inline commands use =C-c e= / =C-c E= / =C-c r= rather than =C-c p= / =C-c P=, leaving those keys free for major modes (for example, Org users can bind =C-c P= to =org-slides-start=).
+
+=C-c d= opens a =transient= dispatch menu that gathers the sidebar toggle, the collapse command, the hunk navigation, show, and revert commands, and viewport-style switching in one place.  The menu needs the =transient= package, built in on recent Emacs; without it the directly bound commands keep working and =diff-minimap-toggle-collapse= remains available on =M-x=.  =diff-minimap-set-viewport-style= (also =M-x=) switches =diff-minimap-viewport-style= interactively and redraws the viewport immediately.
 
 When =diff-minimap-mode= is active and =diff-minimap-inline-preview= is non-nil (the default), opening the minimap shows every hunk inline; each jump ensures the destination hunk is shown too, without removing the others.  =C-c e= toggles the hunk at point.  A hunk you hide with =C-c e= (or every hunk you hide with =C-c E=) stays collapsed during later =M-n= / =M-p= navigation and automatic refreshes; navigation never re-expands a hunk you explicitly turned off.
 
@@ -85,7 +88,7 @@ Only the specific change group (the contiguous =-= /=+= block) containing point 
 
 Changed line groups are also refined at word and character level, using the same comparison as =diff-refine-hunk= in =vc-diff= / =diff-mode=.  Only the words that actually changed get the stronger =diff-minimap-inline-word-added= / =diff-minimap-inline-word-removed= highlight, while the rest of the line keeps the normal inline background.  Set =diff-minimap-inline-word-diff= to =nil= to use whole-line highlighting only.
 
-=M-x diff-minimap-toggle-collapse= collapses unchanged regions so only the diff hunks and their context remain visible, similar to the collapse-unchanged-regions command in VSCode's diff editor.  The number of context lines is controlled by =diff-minimap-collapse-context-lines= (default 3); a numeric prefix argument overrides it for the current collapse.  Collapsing is implemented with overlays, so the buffer text is not modified.  The collapsed ranges update after live-diff refreshes and saves, and invoking the command again expands everything.  While collapsed, the minimap scales to the visible source lines and deleted lines rather than the whole file, so hunks occupy a representative share of the sidebar.  Hunk blocks cover the full vertical span of their lines, which means even a single-line hunk becomes taller when the surrounding unchanged lines are hidden.
+=M-x diff-minimap-toggle-collapse= (or =c= from the =C-c d= dispatch menu) collapses unchanged regions so only the diff hunks and their context remain visible, similar to the collapse-unchanged-regions command in VSCode's diff editor.  The number of context lines is controlled by =diff-minimap-collapse-context-lines= (default 3); a numeric prefix argument overrides it for the current collapse.  Collapsing is implemented with overlays, so the buffer text is not modified.  The collapsed ranges update after live-diff refreshes and saves, and invoking the command again expands everything.  While collapsed, the minimap scales to the visible source lines and deleted lines rather than the whole file, so hunks occupy a representative share of the sidebar.  Hunk blocks cover the full vertical span of their lines, which means even a single-line hunk becomes taller when the surrounding unchanged lines are hidden.
 
 Inline hunks follow the text with markers.  When =diff-minimap-live-diff= is non-nil (the default), editing recomputes the diff from the unsaved buffer text after =diff-minimap-live-diff-delay= seconds of idle time, so the minimap and inline hunks update as you type.  Reverting the text to its =HEAD= state removes the inline hunks without saving.  Set =diff-minimap-live-diff= to =nil= to update only on save and navigation.
 

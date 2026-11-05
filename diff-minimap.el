@@ -33,7 +33,7 @@
 ;;   M-x diff-minimap-toggle      ;; open/close the minimap
 ;;   C-x v ] / C-x v [            ;; step through diff hunks
 ;;   C-c r                        ;; revert the hunk at point inline
-;;   M-x diff-minimap-toggle-collapse ;; show hunks plus context only
+;;   C-c d                        ;; dispatch menu (needs transient)
 ;;
 ;; The toggle is deliberately left unbound so loading the package does not
 ;; shadow stock VC keys (`C-x v m' is `vc-merge').  Bind it in your own
@@ -3192,6 +3192,8 @@ file keep their normal bindings."
           '(menu-item "" diff-minimap-show-all-hunks :filter diff-minimap--file-buffer-filter))
         (define-key map (kbd "C-c r")
           '(menu-item "" diff-minimap-revert-hunk :filter diff-minimap--file-buffer-filter))
+        (define-key map (kbd "C-c d")
+          '(menu-item "" diff-minimap-dispatch :filter diff-minimap--file-buffer-filter))
         (define-key map (kbd "M-n")
           '(menu-item "" diff-minimap-next-hunk :filter diff-minimap--file-buffer-filter))
         (define-key map (kbd "M-p")
@@ -3205,6 +3207,57 @@ file keep their normal bindings."
         (define-key map (kbd "C-x v [")
           '(menu-item "" diff-minimap-previous-hunk :filter diff-minimap--file-buffer-filter))
         map))
+
+;; Dispatch menu — uses the optional `transient' package, built in on
+;; recent Emacs.  Every command keeps a direct binding, so nothing is
+;; lost when `transient' is unavailable.
+
+(defun diff-minimap-set-viewport-style (style)
+  "Set `diff-minimap-viewport-style' to STYLE and redraw the viewport.
+STYLE is one of `outline', `filled', `edge-bar', or `stipple'."
+  (interactive
+   (list (intern (completing-read "Viewport style: "
+                                   '(outline filled edge-bar stipple)
+                                   nil t
+                                   (symbol-name diff-minimap-viewport-style)))))
+  (diff-minimap--ensure-mode)
+  (setq diff-minimap-viewport-style style)
+  (when (get-buffer-window diff-minimap--buffer-name 0)
+    (diff-minimap--update-viewport))
+  (message "diff-minimap viewport style: %s" style))
+
+(declare-function diff-minimap--dispatch-menu "diff-minimap" ())
+(declare-function transient--set-layout "transient")
+(declare-function transient-prefix "transient")
+(declare-function transient-setup "transient")
+
+(defun diff-minimap-dispatch ()
+  "Open the diff-minimap dispatch menu.
+The menu lives on the `transient' package, built in on recent
+Emacs; without it every command keeps its direct binding."
+  (interactive)
+  (if (require 'transient nil t)
+      (diff-minimap--dispatch-menu)
+    (user-error "The dispatch menu needs the `transient' package")))
+
+(eval-when-compile
+  (when (bound-and-true-p byte-compile-current-file)
+    (require 'transient nil t)))
+
+(with-eval-after-load 'transient
+  (transient-define-prefix diff-minimap--dispatch-menu ()
+    "Dispatch a diff-minimap command."
+    [["Toggle"
+      ("t" "toggle the minimap sidebar" diff-minimap-toggle)
+      ("c" "collapse/expand unchanged regions" diff-minimap-toggle-collapse)]
+     ["Hunks"
+      ("n" "next hunk" diff-minimap-next-hunk)
+      ("p" "previous hunk" diff-minimap-previous-hunk)
+      ("e" "toggle hunk at point" diff-minimap-show-hunk)
+      ("E" "show all hunks" diff-minimap-show-all-hunks)
+      ("r" "revert hunk at point" diff-minimap-revert-hunk)]
+     ["Viewport"
+      ("v" "set viewport style" diff-minimap-set-viewport-style)]]))
 
 (defun diff-minimap--any-enabled-buffer-p (&optional excluding)
   "Return non-nil when a live buffer other than EXCLUDING enables the mode."
