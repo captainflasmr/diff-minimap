@@ -111,15 +111,15 @@ The viewport indicator can be selected via =diff-minimap-viewport-style=.  Avail
 
 | Style      | Description                                                      |
 |------------+------------------------------------------------------------------|
-| =filled=   | Solid viewport background, with diff colours drawn on top (default). |
+| =outline=  | Vibrant thin box outline (1px), drawn above the diffs (default). |
+| =filled=   | Solid viewport background, with diff colours drawn on top.      |
 | =edge-bar= | Subtle top and bottom bars.                                      |
-| =outline=  | Vibrant thin box outline (1px), drawn above the diffs.           |
 | =stipple=  | Bitmap pattern fill and edge bars (requires X11).                |
 
 Set it in your config:
 
 #+begin_src emacs-lisp
-(setq diff-minimap-viewport-style 'outline)
+(setq diff-minimap-viewport-style 'filled)
 #+end_src
 
 * Customisation
@@ -131,7 +131,7 @@ Set it in your config:
 | =diff-minimap-font-scale=        | 0.1          | Fraction of default font height for the minimap (1.0 normal) |
 | =diff-minimap-width=             | 6            | Width in characters of the side window (at the small font)   |
 | =diff-minimap-side=              | 'right       | Side to display the minimap (=left= or =right=)              |
-| =diff-minimap-viewport-style=    | 'filled      | How to render the viewport indicator (see above)             |
+| =diff-minimap-viewport-style=    | 'outline     | How to render the viewport indicator (see above)             |
 | =diff-minimap-stipple-pattern=   | 'dots-sparse | Bitmap pattern for the =stipple= viewport style              |
 | =diff-minimap-diff-backend=      | 'auto        | Diff data source: =auto=, =diff-hl=, or =vc=                 |
 | =diff-minimap-fringe-indicators= | t            | Show coloured fringe bitmaps on changed lines                |
