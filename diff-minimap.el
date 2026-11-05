@@ -1,7 +1,7 @@
 ;;; diff-minimap.el --- VSCode-style minimap showing diff regions -*- lexical-binding: t; -*-
 ;;
 ;; Author: James Dyer <captainflasmr@gmail.com>
-;; Version: 0.12.1
+;; Version: 0.12.2
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: vc, tools, convenience
 ;; URL: https://github.com/captainflasmr/diff-minimap
@@ -94,14 +94,16 @@
   :type '(choice (const left) (const right))
   :group 'diff-minimap)
 
-(defcustom diff-minimap-viewport-style 'edge-bar
+(defcustom diff-minimap-viewport-style 'filled
   "How to render the viewport indicator in the minimap.
-`edge-bar' — subtle top and bottom bars (the default).
-`filled'   — solid background, with diff colours drawn on top.
+`filled'   — solid background, with diff colours drawn on top (the default).
+`edge-bar' — subtle top and bottom bars.
+`outline'  — thin box outline around the viewport.
 `stipple'  — bitmap dot pattern fill and edge bars."
-  :type '(choice (const :tag "Edge bars (top and bottom)" edge-bar)
-                  (const :tag "Filled block (full background)" filled)
-                  (const :tag "Stipple + edge bars (diffs visible)" stipple))
+  :type '(choice (const :tag "Filled block (full background)" filled)
+                 (const :tag "Edge bars (top and bottom)" edge-bar)
+                 (const :tag "Outline box (border around viewport)" outline)
+                 (const :tag "Stipple + edge bars (diffs visible)" stipple))
   :group 'diff-minimap)
 
 (defcustom diff-minimap-stipple-pattern 'dots-sparse
@@ -373,13 +375,16 @@ Only buffers with `diff-minimap-mode' enabled set this.")
   "Snapshot of `custom-enabled-themes' at last full render.")
 
 (defvar-local diff-minimap--viewport-edge-top nil
-  "Overlay for the top edge of the viewport region (edge-bar style).")
+  "Overlay for the top edge of the viewport (edge-bar/outline/stipple).")
 
 (defvar-local diff-minimap--viewport-edge-bottom nil
-  "Overlay for the bottom edge of the viewport region (edge-bar style).")
+  "Overlay for the bottom edge of the viewport (edge-bar/outline/stipple).")
 
 (defvar-local diff-minimap--viewport-overlay nil
-  "Overlay covering the full viewport (filled/outline/stipple styles).")
+  "Overlay covering the full viewport (filled/stipple styles).")
+
+(defvar-local diff-minimap--viewport-rail-overlays nil
+  "Overlays drawing the side rails of the viewport (outline style).")
 
 (defvar-local diff-minimap--cursor-overlay nil
   "Overlay highlighting the cursor row in the minimap buffer.")
@@ -1005,14 +1010,61 @@ DIFF-DATA is a list of (TYPE START END) as returned by
         (set-window-vscroll win 0 t)))))
 
 (defun diff-minimap--clear-overlays ()
-  "Remove all diff-minimap overlays (viewport, cursor, diff colours) from the minimap buffer."
+  "Remove all diff-minimap overlays (viewport, rails, cursor, diffs)."
   (dolist (ov (overlays-in (point-min) (point-max)))
     (when (overlay-get ov 'diff-minimap-overlay)
       (delete-overlay ov)))
   (setq diff-minimap--viewport-edge-top nil
         diff-minimap--viewport-edge-bottom nil
         diff-minimap--viewport-overlay nil
+        diff-minimap--viewport-rail-overlays nil
         diff-minimap--cursor-overlay nil))
+
+(defun diff-minimap--make-rail-overlay (beg end mm-buf)
+  "Return a one-character rail overlay from BEG to END in MM-BUF."
+  (let ((ov (make-overlay beg end mm-buf)))
+    (overlay-put ov 'diff-minimap-overlay t)
+    (overlay-put ov 'face `(:background ,diff-minimap--view-bg))
+    (overlay-put ov 'priority 5)
+    ov))
+
+(defun diff-minimap--clear-viewport-rails ()
+  "Delete all outline-style viewport rail overlays."
+  (dolist (ov diff-minimap--viewport-rail-overlays)
+    (when (overlay-buffer ov)
+      (delete-overlay ov)))
+  (setq diff-minimap--viewport-rail-overlays nil))
+
+(defun diff-minimap--draw-viewport-rails (ws-row we-row mm-buf)
+  "Draw one-character side rails for the `outline' viewport style.
+Rails run down both edges of every minimap row from WS-ROW to
+WE-ROW in MM-BUF, forming the left and right borders of the
+viewport box.  Overlays are pooled: moving the viewport reuses
+them instead of recreating, so updates stay cheap even when the
+viewport covers most of the sidebar."
+  (let ((slots nil))
+    (dotimes (i (1+ (- we-row ws-row)))
+      (let* ((row (+ ws-row i))
+             (bol (diff-minimap--row->pos row))
+             (eol (diff-minimap--row->pos (1+ row))))
+        (push (cons bol (1+ bol)) slots)
+        (when (> eol (+ 2 bol))
+          (push (cons (- eol 2) (1- eol)) slots))))
+    (setq slots (nreverse slots))
+    (let ((existing diff-minimap--viewport-rail-overlays)
+          (kept nil))
+      (while slots
+        (let ((slot (pop slots)))
+          (if existing
+              (let ((ov (pop existing)))
+                (move-overlay ov (car slot) (cdr slot) mm-buf)
+                (push ov kept))
+            (push (diff-minimap--make-rail-overlay
+                   (car slot) (cdr slot) mm-buf)
+                  kept))))
+      (dolist (ov existing)
+        (delete-overlay ov))
+      (setq diff-minimap--viewport-rail-overlays (nreverse kept)))))
 
 (defun diff-minimap--update-viewport ()
   "Update viewport and cursor overlays in the minimap buffer.
@@ -1069,6 +1121,7 @@ Called on every command — cheap overlay moves, not a full rebuild."
                  (when diff-minimap--viewport-overlay
                    (delete-overlay diff-minimap--viewport-overlay)
                    (setq diff-minimap--viewport-overlay nil))
+                 (diff-minimap--clear-viewport-rails)
                  ;; Draw the top boundary beneath the preceding row.  An
                  ;; overline would increase tiny row heights on GUI frames.
                  (let ((top-row (max 0 (1- ws-row))))
@@ -1107,6 +1160,7 @@ Called on every command — cheap overlay moves, not a full rebuild."
                  (when diff-minimap--viewport-edge-bottom
                    (delete-overlay diff-minimap--viewport-edge-bottom)
                    (setq diff-minimap--viewport-edge-bottom nil))
+                 (diff-minimap--clear-viewport-rails)
                  (if diff-minimap--viewport-overlay
                      (move-overlay diff-minimap--viewport-overlay
                                    (diff-minimap--row->pos ws-row)
@@ -1122,7 +1176,45 @@ Called on every command — cheap overlay moves, not a full rebuild."
                                `(:background ,diff-minimap--view-bg :extend t))
                   ;; Below diff overlays (priority 3) so diffs show through.
                   (overlay-put diff-minimap--viewport-overlay 'priority 1))
+                ('outline
+                 (when diff-minimap--viewport-overlay
+                   (delete-overlay diff-minimap--viewport-overlay)
+                   (setq diff-minimap--viewport-overlay nil))
+                 ;; Top and bottom borders reuse the edge overlays with a
+                 ;; coloured underline, like `edge-bar'; an overline would
+                 ;; increase tiny row heights on GUI frames.
+                 (let ((top-row (max 0 (1- ws-row))))
+                   (if diff-minimap--viewport-edge-top
+                       (move-overlay diff-minimap--viewport-edge-top
+                                     (diff-minimap--row->pos top-row)
+                                     (diff-minimap--row->pos (1+ top-row))
+                                     mm-buf)
+                     (setq diff-minimap--viewport-edge-top
+                           (make-overlay (diff-minimap--row->pos top-row)
+                                         (diff-minimap--row->pos (1+ top-row))
+                                         mm-buf))
+                     (overlay-put diff-minimap--viewport-edge-top
+                                  'diff-minimap-overlay t)))
+                 (overlay-put diff-minimap--viewport-edge-top 'face
+                              `(:underline ,diff-minimap--view-bg :extend t))
+                 (overlay-put diff-minimap--viewport-edge-top 'priority 5)
+                 (if diff-minimap--viewport-edge-bottom
+                     (move-overlay diff-minimap--viewport-edge-bottom
+                                   (diff-minimap--row->pos we-row)
+                                   (diff-minimap--row->pos (1+ we-row))
+                                   mm-buf)
+                   (setq diff-minimap--viewport-edge-bottom
+                         (make-overlay (diff-minimap--row->pos we-row)
+                                       (diff-minimap--row->pos (1+ we-row))
+                                       mm-buf))
+                   (overlay-put diff-minimap--viewport-edge-bottom
+                                'diff-minimap-overlay t))
+                 (overlay-put diff-minimap--viewport-edge-bottom 'face
+                              `(:underline ,diff-minimap--view-bg :extend t))
+                 (overlay-put diff-minimap--viewport-edge-bottom 'priority 5)
+                 (diff-minimap--draw-viewport-rails ws-row we-row mm-buf))
                  ('stipple
+                 (diff-minimap--clear-viewport-rails)
                  (if diff-minimap--viewport-overlay
                      (move-overlay diff-minimap--viewport-overlay
                                    (diff-minimap--row->pos ws-row)

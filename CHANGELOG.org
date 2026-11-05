@@ -10,6 +10,13 @@ This document contains the release notes for diff-minimap.
 
 * Versions
 
+** 0.12.2 — <2026-11-05>
+
+Viewport default and new outline style.
+
+- =diff-minimap-viewport-style= now defaults to =filled=, making the solid viewport background with diff colours on top the out-of-the-box look.
+- Add an =outline= viewport style drawing a thin box around the viewport: coloured underlines mark the top and bottom edges, and one-character rails run down both sides of every viewport row, reusing pooled overlays so updates stay cheap and tiny row heights never change.  A single =:box= face over the whole viewport (the 0.2.0 approach) renders in Emacs as a separate box around every row, so the borders are drawn directly instead.
+
 ** 0.12.1 — <2026-10-29>
 
 Hunk visibility, vc-diff-aligned colours, and word-level inline diffs.
