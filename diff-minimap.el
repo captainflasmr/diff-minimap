@@ -1,7 +1,7 @@
 ;;; diff-minimap.el --- VSCode-style minimap showing diff regions -*- lexical-binding: t; -*-
 ;;
 ;; Author: James Dyer <captainflasmr@gmail.com>
-;; Version: 0.12.2
+;; Version: 0.13.0
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: vc, tools, convenience
 ;; URL: https://github.com/captainflasmr/diff-minimap
@@ -194,6 +194,17 @@ is hidden inside an Org subtree, outline entry, hideshow block, or
 other invisible overlay.  Both ends of the hunk are revealed so the
 whole change can be inspected."
   :type 'boolean
+  :group 'diff-minimap)
+
+(defcustom diff-minimap-jump-on-activate nil
+  "Where to move point when `diff-minimap-mode' is enabled.
+`nil' leaves point alone, `first' jumps to the first diff hunk, and
+`nearest' jumps to the hunk closest to point.  The jump only happens
+when the buffer has diff hunks; switching back to a buffer that already
+has the mode enabled does not move point again."
+  :type '(choice (const :tag "Stay at point" nil)
+                 (const :tag "First diff hunk" first)
+                 (const :tag "Nearest diff hunk" nearest))
   :group 'diff-minimap)
 
 (defcustom diff-minimap-collapse-context-lines 3
@@ -2386,13 +2397,14 @@ HUNK is a list (TYPE START-LINE END-LINE)."
           (set-marker marker nil))))
     (setq diff-minimap--hidden-hunks (nreverse kept))))
 
-(defun diff-minimap--show-all-inline-hunks ()
+(defun diff-minimap--show-all-inline-hunks (&optional data)
   "Ensure every diff hunk in the current buffer has an inline overlay.
 Hunks the user explicitly hid are left hidden.  Existing inline hunks
-are left alone; missing ones are added."
+are left alone; missing ones are added.  DATA, when non-nil, is
+precomputed diff data from `diff-minimap--collect-diff-data'."
   (diff-minimap--cache-faces)
   (setq diff-minimap--inline-active t)
-  (let* ((data (diff-minimap--collect-diff-data))
+  (let* ((data (or data (diff-minimap--collect-diff-data)))
          (full-patch (and data
                           (buffer-file-name)
                           (diff-minimap--current-patch (buffer-file-name)))))
@@ -3061,6 +3073,65 @@ Both ends are revealed so the whole changed region can be inspected."
                     (overlay-put ov 'priority 4)
                     (overlay-put ov 'diff-minimap-search t)))))))))))
 
+(defun diff-minimap--goto-hunk (hunk)
+  "Move point to HUNK, reveal it, and pulse it.
+HUNK is a list (TYPE START-LINE END-LINE).  When inline previews are
+active, ensure the destination hunk is shown before focusing it."
+  (let ((start (nth 1 hunk))
+        (end (nth 2 hunk)))
+    (goto-char (point-min))
+    (forward-line (1- start))
+    (when diff-minimap-reveal-hidden-content
+      (diff-minimap--reveal-hunk start end))
+    (when (and (bound-and-true-p diff-minimap-mode)
+               diff-minimap-inline-preview
+               diff-minimap--inline-active
+               (not (diff-minimap--hunk-overlay-at-line start))
+               (not (diff-minimap--hunk-hidden-p hunk)))
+      (ignore-errors
+        (diff-minimap--show-hunk-overlay hunk start)))
+    (diff-minimap--focus-source-line start)
+    (diff-minimap--pulse-range start end)))
+
+(defun diff-minimap--nearest-hunk (hunks line)
+  "Return the hunk in HUNKS nearest to LINE.
+HUNKS is a list of (TYPE START END) entries.  Distance is measured to
+the hunk's line range, so a hunk containing LINE wins; ties prefer the
+hunk that starts first."
+  (let (best best-distance)
+    (dolist (hunk hunks)
+      (let* ((start (nth 1 hunk))
+             (end (max start (nth 2 hunk)))
+             (distance (cond ((< line start) (- start line))
+                             ((> line end) (- line end))
+                             (t 0))))
+        (when (or (null best)
+                  (< distance best-distance)
+                  (and (= distance best-distance)
+                       (< start (nth 1 best))))
+          (setq best hunk
+                best-distance distance))))
+    best))
+
+(defun diff-minimap--maybe-jump-on-activate ()
+  "Jump to the hunk selected by `diff-minimap-jump-on-activate'.
+Do nothing when the option is nil, the buffer has no hunks, or an
+Ediff session is active."
+  (when (and diff-minimap-jump-on-activate
+             (not diff-minimap--ediff-control-buffer))
+    (let ((data (diff-minimap--collect-diff-data)))
+      (when data
+        (when diff-minimap-inline-preview
+          (diff-minimap--show-all-inline-hunks data))
+        (let ((hunk (if (eq diff-minimap-jump-on-activate 'first)
+                        (car (sort (copy-sequence data)
+                                   (lambda (a b)
+                                     (< (nth 1 a) (nth 1 b)))))
+                      (diff-minimap--nearest-hunk
+                       data (line-number-at-pos)))))
+          (when hunk
+            (diff-minimap--goto-hunk hunk)))))))
+
 ;;;###autoload
 (defun diff-minimap-next-hunk ()
   "Move point to the next diff hunk.
@@ -3076,21 +3147,7 @@ Uses the configured `diff-minimap-diff-backend' to find hunks."
                        (throw 'found h)))))))
     (diff-minimap--prune-hidden-hunks data)
     (if next
-        (let ((start (nth 1 next))
-              (end (nth 2 next)))
-          (goto-char (point-min))
-          (forward-line (1- start))
-          (when diff-minimap-reveal-hidden-content
-            (diff-minimap--reveal-hunk start end))
-          (when (and (bound-and-true-p diff-minimap-mode)
-                     diff-minimap-inline-preview
-                     diff-minimap--inline-active
-                     (not (diff-minimap--hunk-overlay-at-line start))
-                     (not (diff-minimap--hunk-hidden-p next)))
-            (ignore-errors
-              (diff-minimap--show-hunk-overlay next start)))
-          (diff-minimap--focus-source-line start)
-          (diff-minimap--pulse-range start end))
+        (diff-minimap--goto-hunk next)
       (user-error "No next hunk"))))
 
 ;;;###autoload
@@ -3108,21 +3165,7 @@ Uses the configured `diff-minimap-diff-backend' to find hunks."
           (setq prev h))))
     (diff-minimap--prune-hidden-hunks data)
     (if prev
-        (let ((start (nth 1 prev))
-              (end (nth 2 prev)))
-          (goto-char (point-min))
-          (forward-line (1- start))
-          (when diff-minimap-reveal-hidden-content
-            (diff-minimap--reveal-hunk start end))
-          (when (and (bound-and-true-p diff-minimap-mode)
-                     diff-minimap-inline-preview
-                     diff-minimap--inline-active
-                     (not (diff-minimap--hunk-overlay-at-line start))
-                     (not (diff-minimap--hunk-hidden-p prev)))
-            (ignore-errors
-              (diff-minimap--show-hunk-overlay prev start)))
-          (diff-minimap--focus-source-line start)
-          (diff-minimap--pulse-range start end))
+        (diff-minimap--goto-hunk prev)
       (user-error "No previous hunk"))))
 
 
@@ -3335,7 +3378,8 @@ point to its HEAD text without saving.
         (add-hook 'change-major-mode-hook #'diff-minimap--change-major-mode nil t)
         (add-hook 'after-revert-hook #'diff-minimap--after-revert nil t)
         (diff-minimap--install-global-integration)
-        (diff-minimap--activate-buffer))
+        (diff-minimap--activate-buffer)
+        (diff-minimap--maybe-jump-on-activate))
     (remove-hook 'after-change-functions #'diff-minimap--after-change t)
     (remove-hook 'after-save-hook #'diff-minimap--after-save t)
     (remove-hook 'after-save-hook #'diff-minimap--refresh-inline-hunk t)

@@ -59,6 +59,8 @@ When a hunk has deleted and added lines, the jump lands on the real added text; 
 
 When =diff-minimap-reveal-hidden-content= is non-nil (the default), a jump also unfolds the destination if it is hidden — for example inside a folded Org subtree, an outline entry, a hideshow block, or another invisible overlay.  Both ends of the hunk are revealed so the whole change can be inspected.  This uses each mode's own reveal hooks, so unrelated folds are left alone.
 
+Set =diff-minimap-jump-on-activate= to =first= or =nearest= to move point when the mode is enabled: =first= jumps to the first diff hunk, while =nearest= jumps to the hunk closest to point (a hunk containing point wins).  The default =nil= leaves point where it is.  The jump happens only when the mode is enabled in a buffer with hunks; switching back to a buffer that already has the mode enabled does not move point.
+
 | Keybinding | Command                          |
 |------------+----------------------------------|
 | =C-x v ]=  | =diff-minimap-next-hunk=         |
@@ -145,6 +147,7 @@ Set it in your config:
 | =diff-minimap-inline-word-diff=  | t           | Highlight word-level changes inside inline hunks             |
 | =diff-minimap-collapse-context-lines= | 3       | Unchanged lines kept visible around hunks when collapsed     |
 | =diff-minimap-reveal-hidden-content= | t        | Unfold hidden content at the destination hunk                |
+| =diff-minimap-jump-on-activate= | nil          | Jump on enable: =first=, =nearest=, or =nil= (stay)          |
 | =diff-minimap-live-diff=         | t           | Recompute the diff from unsaved buffer text while typing     |
 | =diff-minimap-live-diff-delay=   | 0.2         | Idle seconds before a live diff refresh                      |
 

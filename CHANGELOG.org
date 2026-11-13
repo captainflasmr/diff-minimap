@@ -10,6 +10,12 @@ This document contains the release notes for diff-minimap.
 
 * Versions
 
+** 0.13.0 — <2026-11-13>
+
+Jump to a diff when the mode is enabled.
+
+- Add =diff-minimap-jump-on-activate= (default =nil=).  Set it to =first= to jump to the first diff hunk when =diff-minimap-mode= is enabled, or =nearest= to jump to the hunk closest to point; a hunk containing point wins and ties prefer the earlier hunk.  The jump reveals the destination, shows its inline preview when inline previews are active, and pulses the hunk just like =diff-minimap-next-hunk=.  Switching back to a buffer that already has the mode enabled, auto-reverts, and Ediff sessions do not trigger the jump.  The hunk navigation commands now share the same jump helper.
+
 ** 0.12.2 — <2026-11-05>
 
 Viewport default, outline style, and dispatch menu.

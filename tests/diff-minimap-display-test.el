@@ -355,5 +355,49 @@
         (with-current-buffer source (set-buffer-modified-p nil))
         (kill-buffer source)))))
 
+(ert-deftest diff-minimap-nearest-hunk-uses-ranges ()
+  "Nearest hunks are measured by range, with ties going to the earlier hunk."
+  (let ((data '((added 10 12) (changed 20 24) (removed 30 30))))
+    (should (equal '(added 10 12)
+                   (diff-minimap--nearest-hunk data 1)))
+    (should (equal '(changed 20 24)
+                   (diff-minimap--nearest-hunk data 17)))
+    (should (equal '(changed 20 24)
+                   (diff-minimap--nearest-hunk data 22)))
+    (should (equal '(removed 30 30)
+                   (diff-minimap--nearest-hunk data 100)))
+    (should (equal '(added 10 12)
+                   (diff-minimap--nearest-hunk
+                    '((added 10 12) (changed 16 18)) 14)))
+    (should (equal '(added 10 12)
+                   (diff-minimap--nearest-hunk
+                    '((changed 16 18) (added 10 12)) 14)))))
+
+(ert-deftest diff-minimap-jump-on-activate-selects-hunk ()
+  "Activation jumps to the first or nearest hunk, or stays put when nil."
+  (with-temp-buffer
+    (insert "one\ntwo\nthree\nfour\nfive\n")
+    (goto-char (point-min))
+    (forward-line 3)
+    (let ((data '((changed 5 5) (added 1 1)))
+          (diff-minimap-jump-on-activate 'nearest)
+          (diff-minimap--ediff-control-buffer nil)
+          (diff-minimap-inline-preview nil)
+          jumped)
+      (cl-letf (((symbol-function 'diff-minimap--collect-diff-data)
+                 (lambda () data))
+                ((symbol-function 'diff-minimap--goto-hunk)
+                 (lambda (hunk) (setq jumped hunk))))
+        (diff-minimap--maybe-jump-on-activate)
+        (should (equal jumped '(changed 5 5)))
+        (setq jumped nil
+              diff-minimap-jump-on-activate 'first)
+        (diff-minimap--maybe-jump-on-activate)
+        (should (equal jumped '(added 1 1)))
+        (setq jumped nil
+              diff-minimap-jump-on-activate nil)
+        (diff-minimap--maybe-jump-on-activate)
+        (should-not jumped)))))
+
 (provide 'diff-minimap-display-test)
 ;;; diff-minimap-display-test.el ends here
