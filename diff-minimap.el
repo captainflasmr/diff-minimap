@@ -94,10 +94,10 @@
   :type '(choice (const left) (const right))
   :group 'diff-minimap)
 
-(defcustom diff-minimap-viewport-style 'outline
+(defcustom diff-minimap-viewport-style 'filled
   "How to render the viewport indicator in the minimap.
-`outline'  — thin vibrant box outline around the viewport (the default).
-`filled'   — solid background, with diff colours drawn on top.
+`filled'   — solid background, with diff colours drawn on top (the default).
+`outline'  — thin vibrant box outline around the viewport.
 `edge-bar' — subtle top and bottom bars.
 `stipple'  — bitmap dot pattern fill and edge bars."
   :type '(choice (const :tag "Outline box (border around viewport)" outline)
