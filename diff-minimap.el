@@ -382,9 +382,6 @@ Only buffers with `diff-minimap-mode' enabled set this.")
 (defvar-local diff-minimap--last-geometry nil
   "Minimap geometry used by the last full render.")
 
-(defvar-local diff-minimap--last-vis-cols nil
-  "Visible minimap column count at last full render — right-rail placement.")
-
 (defvar-local diff-minimap--last-themes nil
   "Snapshot of `custom-enabled-themes' at last full render.")
 
@@ -1051,29 +1048,35 @@ DIFF-DATA is a list of (TYPE START END) as returned by
       (delete-overlay ov)))
   (setq diff-minimap--viewport-rail-overlays nil))
 
-(defun diff-minimap--draw-viewport-rails (ws-row we-row mm-buf &optional vis-cols)
+(defun diff-minimap--draw-viewport-rails (ws-row we-row mm-buf)
   "Draw one-character side rails for the `outline' viewport style.
 Rails run down both edges of every minimap row from WS-ROW to
 WE-ROW in MM-BUF, forming the left and right borders of the
-viewport box.  VIS-COLS is the measured number of visible columns;
-the right rail is placed from it, flush with the visible right
-edge, so row padding wider than the window cannot clip the border
-off-screen.  Overlays are pooled:
-moving the viewport reuses them instead of recreating, so updates
-stay cheap even when the viewport covers most of the sidebar."
+viewport box.  Rows are padded to at least the window's pixel width,
+so the last character carries the visible right edge even when the
+width is not an exact multiple of the character width; placing the
+right rail there keeps it flush with the top and bottom borders.
+Overlays are pooled: moving the viewport reuses them instead of
+recreating, so updates stay cheap even when the viewport covers most
+of the sidebar."
   (let ((slots nil))
     (dotimes (i (1+ (- we-row ws-row)))
       (let* ((row (+ ws-row i))
              (bol (diff-minimap--row->pos row))
              (eol (diff-minimap--row->pos (1+ row)))
              (w (- eol bol 1))
-             (usable (min w (or vis-cols w))))
+             (right (1- w)))
         ;; Left rail: the first character of the row.
         (push (cons bol (min (1+ bol) (1- eol))) slots)
-        ;; Right rail: the last visible character of the row, flush
-        ;; with the right edge the top/bottom underlines extend to.
-        (when (>= usable 2)
-          (push (cons (1- (+ bol usable)) (+ bol usable)) slots))))
+        ;; Right rail: the last character of the row, including the
+        ;; partial column that can extend past the window's right
+        ;; edge.  The old last-fully-visible column stopped short of
+        ;; the edge whenever the pixel width was not a multiple of the
+        ;; character width.
+        (when (and (>= w 2) (>= right 1))
+          (push (cons (+ bol right)
+                      (min (1+ (+ bol right)) (1- eol)))
+                slots))))
     (setq slots (nreverse slots))
     (let ((existing diff-minimap--viewport-rail-overlays)
           (kept nil))
@@ -1089,6 +1092,18 @@ stay cheap even when the viewport covers most of the sidebar."
       (dolist (ov existing)
         (delete-overlay ov))
       (setq diff-minimap--viewport-rail-overlays (nreverse kept)))))
+
+(defun diff-minimap--viewport-top-face (at-top &optional color)
+  "Return the face for the top viewport border.
+AT-TOP non-nil draws a strike-through on the first minimap row.  There
+is no preceding row to underline there, and with the tiny minimap font
+the strike-through sits at the very top of the row without increasing
+its height.  Otherwise draw an underline below the preceding row.
+COLOR is the border colour, or nil for the default foreground."
+  (let ((attribute (if at-top :strike-through :underline)))
+    (if color
+        (list attribute color :extend t)
+      (list attribute t :extend t))))
 
 (defun diff-minimap--update-viewport ()
   "Update viewport and cursor overlays in the minimap buffer.
@@ -1112,7 +1127,6 @@ Called on every command — cheap overlay moves, not a full rebuild."
                            (nth 0 (with-current-buffer diff-minimap--ediff-control-buffer (diff-minimap--collect-ediff-dual)))
                          (diff-minimap--display-line-total ranges deletions)))
                 (nrows (or diff-minimap--last-nrows 1))
-                (vis-cols diff-minimap--last-vis-cols)
                 (scale (/ (float total) nrows))
                 (ws-win (if dual-col (get-buffer-window a-buf 0) (get-buffer-window this-buf 0)))
                 (pt-line (if dual-col
@@ -1147,8 +1161,10 @@ Called on every command — cheap overlay moves, not a full rebuild."
                    (delete-overlay diff-minimap--viewport-overlay)
                    (setq diff-minimap--viewport-overlay nil))
                  (diff-minimap--clear-viewport-rails)
-                 ;; Draw the top boundary beneath the preceding row.  An
-                 ;; overline would increase tiny row heights on GUI frames.
+                 ;; Draw the top boundary beneath the preceding row.  At
+                 ;; the top of the file there is no such row, so use a
+                 ;; strike-through on row 0; it sits at the top of the
+                 ;; tiny row without increasing the row height.
                  (let ((top-row (max 0 (1- ws-row))))
                    (if diff-minimap--viewport-edge-top
                        (move-overlay diff-minimap--viewport-edge-top
@@ -1162,7 +1178,8 @@ Called on every command — cheap overlay moves, not a full rebuild."
                      (overlay-put diff-minimap--viewport-edge-top
                                   'diff-minimap-overlay t)))
                  (overlay-put diff-minimap--viewport-edge-top 'face
-                              '(:underline t :extend t))
+                              (diff-minimap--viewport-top-face
+                               (zerop ws-row)))
                  (overlay-put diff-minimap--viewport-edge-top 'priority 5)
                  (if diff-minimap--viewport-edge-bottom
                      (move-overlay diff-minimap--viewport-edge-bottom
@@ -1206,8 +1223,10 @@ Called on every command — cheap overlay moves, not a full rebuild."
                    (delete-overlay diff-minimap--viewport-overlay)
                    (setq diff-minimap--viewport-overlay nil))
                  ;; Top and bottom borders reuse the edge overlays with
-                 ;; a vibrant one-pixel underline, like `edge-bar'; an
-                 ;; overline would increase tiny row heights on GUI
+                 ;; a vibrant one-pixel line, like `edge-bar'.  At the
+                 ;; top of the file there is no preceding row to
+                 ;; underline, so the top uses a strike-through on row 0;
+                 ;; an overline would increase tiny row heights on GUI
                  ;; frames.  Priority 5 keeps them above the diff rows.
                  (let ((top-row (max 0 (1- ws-row))))
                    (if diff-minimap--viewport-edge-top
@@ -1222,7 +1241,8 @@ Called on every command — cheap overlay moves, not a full rebuild."
                      (overlay-put diff-minimap--viewport-edge-top
                                   'diff-minimap-overlay t)))
                  (overlay-put diff-minimap--viewport-edge-top 'face
-                              `(:underline ,diff-minimap--view-fg :extend t))
+                              (diff-minimap--viewport-top-face
+                               (zerop ws-row) diff-minimap--view-fg))
                  (overlay-put diff-minimap--viewport-edge-top 'priority 5)
                  (if diff-minimap--viewport-edge-bottom
                      (move-overlay diff-minimap--viewport-edge-bottom
@@ -1238,7 +1258,7 @@ Called on every command — cheap overlay moves, not a full rebuild."
                  (overlay-put diff-minimap--viewport-edge-bottom 'face
                               `(:underline ,diff-minimap--view-fg :extend t))
                  (overlay-put diff-minimap--viewport-edge-bottom 'priority 5)
-                 (diff-minimap--draw-viewport-rails ws-row we-row mm-buf vis-cols))
+                 (diff-minimap--draw-viewport-rails ws-row we-row mm-buf))
                  ('stipple
                  (diff-minimap--clear-viewport-rails)
                  (if diff-minimap--viewport-overlay
@@ -1446,17 +1466,6 @@ scaled font wider than `diff-minimap-font-scale' is accounted for."
                (width (and size (car size))))
           (and (numberp width) (> width 0) width))))))
 
-(defun diff-minimap--minimap-visible-columns (win)
-  "Return the number of minimap columns actually visible in WIN, or nil.
-Rows can be padded wider than the window (`actual-width' uses a
-ceiling), so buffer-column positions near the row end may be clipped;
-this measures the true visible width in pixels."
-  (let ((char-w (diff-minimap--minimap-char-width win)))
-    (when (and char-w
-               (window-live-p win)
-               (> (window-body-width win t) 0))
-      (max 1 (floor (/ (window-body-width win t) char-w))))))
-
 (defun diff-minimap--minimap-geometry (win)
   "Return (ROWS HEIGHT WIDTH ROW-HEIGHT) for minimap WIN, or nil.
 HEIGHT and ROW-HEIGHT are pixels; WIDTH is in frame columns.  Leave at
@@ -1527,10 +1536,20 @@ registered with `get-buffer-window'."
              (diff-B (when dual-col (nth 2 ediff-dual)))
              (src-win (if dual-col (get-buffer-window a-buf 0) (get-buffer-window this-buf 0)))
              (mm-win (or window (get-buffer-window mm-buf 0)))
-             (actual-width (let ((base-w (if mm-win (window-width mm-win) diff-minimap-width)))
-                             (if (and (numberp diff-minimap-font-scale) (> diff-minimap-font-scale 0))
-                                 (ceiling (/ (float base-w) diff-minimap-font-scale))
-                               base-w)))
+             (actual-width (let ((base-w (if mm-win (window-width mm-win) diff-minimap-width))
+                                 (char-w (and mm-win (diff-minimap--minimap-char-width mm-win)))
+                                 (px-w (and mm-win (window-body-width mm-win t))))
+                             ;; Prefer the measured pixel width: `window-width'
+                             ;; counts whole frame columns and can leave a few
+                             ;; pixels of the minimap row unpainted, which puts
+                             ;; the right rail short of the top/bottom borders.
+                             (cond
+                              ((and px-w char-w (> char-w 0))
+                               (max 1 (ceiling (/ (float px-w) char-w))))
+                              ((and (numberp diff-minimap-font-scale)
+                                    (> diff-minimap-font-scale 0))
+                               (ceiling (/ (float base-w) diff-minimap-font-scale)))
+                              (t base-w))))
              (geometry (diff-minimap--minimap-geometry mm-win))
              (nrows (or (car geometry)
                         (let ((row-px (max 1 (ceiling (* (frame-char-height)
@@ -1549,7 +1568,6 @@ registered with `get-buffer-window'."
              (row-diff-B (when dual-col (make-vector nrows nil))))
         (setq diff-minimap--last-nrows nrows
               diff-minimap--last-geometry geometry
-              diff-minimap--last-vis-cols (diff-minimap--minimap-visible-columns mm-win)
               diff-minimap--last-themes (and (boundp 'custom-enabled-themes)
                                               custom-enabled-themes))
         (if dual-col

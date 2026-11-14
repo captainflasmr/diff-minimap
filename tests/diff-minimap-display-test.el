@@ -399,5 +399,28 @@
         (diff-minimap--maybe-jump-on-activate)
         (should-not jumped)))))
 
+(ert-deftest diff-minimap-viewport-top-face-at-buffer-start ()
+  "At the top of the file the top border uses a strike-through on row 0."
+  (should (equal '(:strike-through t :extend t)
+                 (diff-minimap--viewport-top-face t)))
+  (should (equal '(:strike-through "red" :extend t)
+                 (diff-minimap--viewport-top-face t "red")))
+  (should (equal '(:underline t :extend t)
+                 (diff-minimap--viewport-top-face nil)))
+  (should (equal '(:underline "red" :extend t)
+                 (diff-minimap--viewport-top-face nil "red"))))
+
+(ert-deftest diff-minimap-rails-use-last-row-character ()
+  "The right rail uses the last row character so it reaches the window edge."
+  (with-temp-buffer
+    (insert (make-string 10 ?\s) "\n"
+            (make-string 10 ?\s) "\n")
+    (setq-local diff-minimap--viewport-rail-overlays nil)
+    (diff-minimap--draw-viewport-rails 0 1 (current-buffer))
+    (should (equal (mapcar (lambda (ov)
+                             (list (overlay-start ov) (overlay-end ov)))
+                           diff-minimap--viewport-rail-overlays)
+                   '((1 2) (10 11) (12 13) (21 22))))))
+
 (provide 'diff-minimap-display-test)
 ;;; diff-minimap-display-test.el ends here

@@ -15,6 +15,8 @@ This document contains the release notes for diff-minimap.
 Jump to a diff when the mode is enabled.
 
 - Add =diff-minimap-jump-on-activate= (default =nil=).  Set it to =first= to jump to the first diff hunk when =diff-minimap-mode= is enabled, or =nearest= to jump to the hunk closest to point; a hunk containing point wins and ties prefer the earlier hunk.  The jump reveals the destination, shows its inline preview when inline previews are active, and pulses the hunk just like =diff-minimap-next-hunk=.  Switching back to a buffer that already has the mode enabled, auto-reverts, and Ediff sessions do not trigger the jump.  The hunk navigation commands now share the same jump helper.
+- Fix the =outline= and =edge-bar= viewport borders sliding down a few pixels when the source window is at the beginning of the file.  With no preceding minimap row to underline, the top border now uses a strike-through on the first row; with the tiny minimap font it sits at the very top and does not increase the row height.  Scrolling away from the top keeps the existing underline on the preceding row.
+- Keep the =outline= viewport's right rail flush with the top and bottom borders.  Minimap rows are now padded from the window's measured pixel width instead of whole frame columns, which could leave a few unpainted pixels on the right, and the rail is drawn on the row's last character so its clipped edge reaches the window border.
 
 ** 0.12.2 — <2026-11-05>
 
